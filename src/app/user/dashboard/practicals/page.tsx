@@ -7,6 +7,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { ChevronDown } from "lucide-react";
+import { toast } from "sonner";
 import { AssignmentCard } from "@/components/assignment-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -35,6 +36,7 @@ interface Practical {
   description: string;
   file_url: string;
   createdAt: string;
+  deadline?: string | null;
   subject: { _id: string; name: string };
   section?: { _id: string; name: string } | null;
 }
@@ -102,19 +104,22 @@ export default function PracticalsPage() {
       });
 
       try {
+        let res;
         if (isCompleted) {
-          await fetch(`/api/practical-completions?practicalId=${id}`, {
+          res = await fetch(`/api/practical-completions?practicalId=${id}`, {
             method: "DELETE",
           });
         } else {
-          await fetch("/api/practical-completions", {
+          res = await fetch("/api/practical-completions", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ practicalId: id }),
           });
         }
+        if (!res.ok) throw new Error("Failed to update status");
       } catch {
         // Revert on error
+        toast.error("Failed to update completion status.");
         setCompletedIds((prev) => {
           const next = new Set(prev);
           if (isCompleted) next.add(id);
@@ -166,6 +171,9 @@ export default function PracticalsPage() {
   }, []);
 
   useEffect(() => {
+    // M-04: Prevent stale fetch results overwriting state when rapidly switching filters
+    const controller = new AbortController();
+
     async function fetchPracticals() {
       setLoading(true);
       try {
@@ -180,7 +188,7 @@ export default function PracticalsPage() {
         }
 
         const url = params.toString() ? `/api/practicals?${params}` : "/api/practicals";
-        const res = await fetch(url);
+        const res = await fetch(url, { signal: controller.signal });
         const data = await res.json();
         let allPracticals: Practical[] = data.practicals || [];
 
@@ -193,12 +201,14 @@ export default function PracticalsPage() {
 
         setPracticals(allPracticals);
       } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") return;
         console.error("Failed to fetch practicals:", error);
       } finally {
         setLoading(false);
       }
     }
     fetchPracticals();
+    return () => controller.abort();
   }, [selectedSubject, streamSubjectIds, selectedSection]);
 
   // Filter by status then sort
@@ -388,14 +398,16 @@ export default function PracticalsPage() {
             </Card>
           ))}
         </div>
-      ) : practicals.length === 0 ? (
+      ) : groupedPracticals.length === 0 ? (
         <div className="text-center py-12">
           <div className="mx-auto h-16 w-16 rounded-2xl bg-muted flex items-center justify-center text-2xl mb-4">
             🧪
           </div>
-          <h3 className="font-semibold text-lg">No practicals yet</h3>
+          <h3 className="font-semibold text-lg">No practicals found</h3>
           <p className="text-sm text-muted-foreground mt-1">
-            Practicals will appear here once they are posted by admin.
+            {practicals.length === 0
+              ? "Practicals will appear here once they are posted."
+              : "Try adjusting your filters to see more results."}
           </p>
         </div>
       ) : (
@@ -464,11 +476,12 @@ export default function PracticalsPage() {
                             description={practical.description}
                             subjectName={practical.subject?.name}
                             subjectId={practical.subject?._id}
-                            deadline={null}
+                            deadline={practical.deadline ?? null}
                             fileUrl={practical.file_url}
                             createdAt={practical.createdAt}
                             completed={completedIds.has(practical._id)}
                             onToggleComplete={toggleComplete}
+                            subjectLinkPath="/user/dashboard/practicals"
                           />
                         ))}
                       </div>

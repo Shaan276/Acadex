@@ -10,16 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
 
-function toDownloadUrl(url: string): string {
-  try {
-    const fileMatch = url.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
-    if (fileMatch) return `https://drive.google.com/uc?export=download&id=${fileMatch[1]}`;
-    const parsed = new URL(url);
-    const idParam = parsed.searchParams.get("id");
-    if (parsed.hostname === "drive.google.com" && idParam) return `https://drive.google.com/uc?export=download&id=${idParam}`;
-  } catch {}
-  return url;
-}
+import { toDownloadUrl } from "@/lib/document-utils";
 
 interface AssignmentCardProps {
   id: string;
@@ -32,6 +23,7 @@ interface AssignmentCardProps {
   createdAt: string;
   completed?: boolean;
   onToggleComplete?: (id: string) => void;
+  subjectLinkPath?: string; // M-07: Customize where the subject badge links
 }
 
 export function AssignmentCard({
@@ -45,8 +37,17 @@ export function AssignmentCard({
   createdAt,
   completed = false,
   onToggleComplete,
+  subjectLinkPath = "/user/dashboard/notes",
 }: AssignmentCardProps) {
-  const isOverdue = deadline ? new Date(deadline) < new Date() : false;
+  // H-03: Use end-of-day UTC (23:59:59) so assignments aren't marked overdue
+  // on the morning of the due date itself. Only mark overdue the next day.
+  const isOverdue = deadline
+    ? (() => {
+        const d = new Date(deadline);
+        d.setUTCHours(23, 59, 59, 999);
+        return d < new Date();
+      })()
+    : false;
   const deadlineDate = deadline
     ? new Date(deadline).toLocaleDateString("en-IN", {
         year: "numeric",
@@ -108,7 +109,7 @@ export function AssignmentCard({
                 {subjectName && (
                   subjectId ? (
                     <Link
-                      href={`/user/dashboard/notes?subject=${subjectId}`}
+                      href={`${subjectLinkPath}?subject=${subjectId}`}
                       onClick={(e) => e.stopPropagation()}
                     >
                       <Badge variant="secondary" className="rounded-lg text-xs hover:bg-primary/20 transition-colors cursor-pointer">

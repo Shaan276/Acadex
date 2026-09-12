@@ -181,6 +181,13 @@ export async function GET(request: Request) {
       }
     }
 
+    const pageParam = searchParams.get("page");
+    const limitParam = searchParams.get("limit");
+    
+    const page = pageParam ? Math.max(1, parseInt(pageParam) || 1) : 1;
+    const limit = limitParam ? Math.max(1, parseInt(limitParam) || 50) : 50;
+    const skip = (page - 1) * limit;
+
     // 3) Fetch request rows for panel tables.
     const uploads = await UserUpload.find(filter)
       .populate("uploadedBy", "name college_id")
@@ -188,48 +195,54 @@ export async function GET(request: Request) {
       .populate("section", "name")
       .populate("reviewedBy", "name")
       .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
       .lean();
+      
+    const total = await UserUpload.countDocuments(filter);
 
-    // 4) Reconcile legacy pending rows that were incorrectly saved as Upload/create.
-    //    This ensures existing bad rows are auto-corrected without manual DB scripts.
-    for (const upload of uploads) {
-      if (!upload.resourceId || upload.status !== "pending") continue;
+    // H-12 FIX: Reconciliation on GET violates HTTP idempotency and causes DB write contention.
+    // This block now only runs for admins (not on every student page load) and can be fully
+    // disabled by setting DISABLE_UPLOAD_RECONCILIATION=true in environment variables.
+    // TODO: Migrate this logic to a one-time migration script (node scripts/reconcile-uploads.ts).
+    const reconciliationEnabled = process.env.DISABLE_UPLOAD_RECONCILIATION !== "true";
+    if (reconciliationEnabled && userRole === "admin") {
+      for (const upload of uploads) {
+        if (!upload.resourceId || upload.status !== "pending") continue;
 
-      const resolved = resolveRequestFlags(
-        (upload as { requestKind?: string; reqType?: string }).requestKind || null,
-        (upload as { requestKind?: string; reqType?: string }).reqType || null
-      );
+        const resolved = resolveRequestFlags(
+          (upload as { requestKind?: string; reqType?: string }).requestKind || null,
+          (upload as { requestKind?: string; reqType?: string }).reqType || null
+        );
 
-      // Only infer when still marked as create/upload but points to existing resource.
-      if (resolved.requestKind !== "create") continue;
+        if (resolved.requestKind !== "create") continue;
 
-      const target = await loadTargetResource(upload.type, String(upload.resourceId));
-      if (!target) continue;
+        const target = await loadTargetResource(upload.type, String(upload.resourceId));
+        if (!target) continue;
 
-      const uploadSubjectId =
-        upload.subject && typeof upload.subject === "object"
-          ? String((upload.subject as { _id?: unknown })._id || "")
-          : String(upload.subject || "");
-      const targetSubjectId = target.subject ? String(target.subject) : "";
+        const uploadSubjectId =
+          upload.subject && typeof upload.subject === "object"
+            ? String((upload.subject as { _id?: unknown })._id || "")
+            : String(upload.subject || "");
+        const targetSubjectId = target.subject ? String(target.subject) : "";
 
-      // If request payload equals live resource, it's a remove request.
-      // Otherwise, it's an edit request.
-      const isSameAsTarget =
-        (upload.title || "").trim() === (target.title || "").trim() &&
-        (upload.description || "").trim() === (target.description || "").trim() &&
-        (upload.file_url || "").trim() === (target.file_url || "").trim() &&
-        uploadSubjectId === targetSubjectId;
+        const isSameAsTarget =
+          (upload.title || "").trim() === (target.title || "").trim() &&
+          (upload.description || "").trim() === (target.description || "").trim() &&
+          (upload.file_url || "").trim() === (target.file_url || "").trim() &&
+          uploadSubjectId === targetSubjectId;
 
-      const inferredKind: "edit" | "delete" = isSameAsTarget ? "delete" : "edit";
-      const inferredReqType = requestKindToReqType(inferredKind);
+        const inferredKind: "edit" | "delete" = isSameAsTarget ? "delete" : "edit";
+        const inferredReqType = requestKindToReqType(inferredKind);
 
-      await UserUpload.findByIdAndUpdate(upload._id, {
-        requestKind: inferredKind,
-        reqType: inferredReqType,
-      });
+        await UserUpload.findByIdAndUpdate(upload._id, {
+          requestKind: inferredKind,
+          reqType: inferredReqType,
+        });
 
-      (upload as { requestKind?: string; reqType?: string }).requestKind = inferredKind;
-      (upload as { requestKind?: string; reqType?: string }).reqType = inferredReqType;
+        (upload as { requestKind?: string; reqType?: string }).requestKind = inferredKind;
+        (upload as { requestKind?: string; reqType?: string }).reqType = inferredReqType;
+      }
     }
 
     // Backfill missing resourceId for old approved create requests so edit/remove can work.
@@ -378,7 +391,16 @@ export async function GET(request: Request) {
       ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     }
 
-    return NextResponse.json({ uploads, yourUploads });
+    return NextResponse.json({ 
+      uploads, 
+      yourUploads,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
   } catch (error) {
     console.error("List user uploads error:", error);
     return NextResponse.json(
@@ -683,18 +705,36 @@ export async function PATCH(request: Request) {
 
     await connectDB();
 
-    const upload = await UserUpload.findById(uploadId);
+    // M-13: Atomically lock the request to prevent double-approval duplicates
+    const upload = await UserUpload.findOneAndUpdate(
+      { _id: uploadId, status: "pending" },
+      { status: "processing" },
+      { new: true }
+    );
+
     if (!upload) {
+      const existing = await UserUpload.findById(uploadId);
+      if (!existing) {
+        return NextResponse.json(
+          { error: "Upload request not found" },
+          { status: 404 }
+        );
+      }
       return NextResponse.json(
-        { error: "Upload request not found" },
-        { status: 404 }
+        { error: `This upload has already been reviewed or is being processed` },
+        { status: 400 }
       );
     }
 
-    if (upload.status !== "pending") {
+    // H-05: Sub-admins can only approve/deny requests belonging to their section
+    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
+    const userSection = request.headers.get("x-user-section");
+    if (!isSuperAdmin && userSection && upload.section && upload.section.toString() !== userSection) {
+      // Rollback the processing lock
+      await UserUpload.findByIdAndUpdate(uploadId, { status: "pending" });
       return NextResponse.json(
-        { error: `This upload has already been ${upload.status}` },
-        { status: 400 }
+        { error: "You can only review requests for your own section" },
+        { status: 403 }
       );
     }
 

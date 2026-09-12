@@ -119,10 +119,15 @@ export async function GET(request: Request) {
     allowedSections = Array.from(new Set([...allowedSections, ...assignedSections]));
 
     // Section filtering logic:
-    if (userRole === "admin" && !isSuperAdmin && allowedSections.length > 0) {
-      if (sectionParam && sectionParam !== "all") {
-        filter.$or = [{ section: sectionParam }, { sections: sectionParam }];
-      } else if (sectionParam !== "all") {
+    if (userRole === "admin" && !isSuperAdmin) {
+      // M-02: Prevent section=all bypass for sub-admins
+      const querySection = sectionParam && sectionParam !== "all" ? sectionParam : null;
+      if (querySection) {
+        if (allowedSections.length > 0 && !allowedSections.includes(querySection)) {
+          return NextResponse.json({ notes: [] });
+        }
+        filter.$or = [{ section: querySection }, { sections: querySection }];
+      } else if (allowedSections.length > 0) {
         filter.$or = [
           { section: { $in: allowedSections } },
           { sections: { $in: allowedSections } }
@@ -134,14 +139,33 @@ export async function GET(request: Request) {
       filter.$or = [{ section: userSection }, { sections: userSection }];
     }
 
+    const pageParam = searchParams.get("page");
+    const limitParam = searchParams.get("limit");
+    
+    const page = pageParam ? Math.max(1, parseInt(pageParam) || 1) : 1;
+    const limit = limitParam ? Math.max(1, parseInt(limitParam) || 50) : 50;
+    const skip = (page - 1) * limit;
+
     const notes = await Note.find(filter)
       .populate("subject", "name type semester")
       .populate("section", "name")
       .populate("uploadedBy", "name")
       .sort({ uploadedAt: -1 })
+      .skip(skip)
+      .limit(limit)
       .lean();
 
-    return NextResponse.json({ notes });
+    const total = await Note.countDocuments(filter);
+
+    return NextResponse.json({ 
+      notes,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
   } catch (error) {
     console.error("List notes error:", error);
     return NextResponse.json(

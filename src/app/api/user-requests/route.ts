@@ -482,17 +482,35 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    const request = await UserRequest.findById(requestId);
+    // M-13: Atomically lock the request to prevent double-approval duplicates
+    const request = await UserRequest.findOneAndUpdate(
+      { _id: requestId, status: "pending" },
+      { status: "processing" },
+      { new: true }
+    );
+
     if (!request) {
+      const existing = await UserRequest.findById(requestId);
+      if (!existing) {
+        return NextResponse.json(
+          { error: "Request not found" },
+          { status: 404 }
+        );
+      }
       return NextResponse.json(
-        { error: "Request not found" },
-        { status: 404 }
+        { error: "This request has already been reviewed or is currently being processed" },
+        { status: 400 }
       );
     }
-    if (request.status !== "pending") {
+    
+    // H-05: Sub-admins can only approve/deny requests belonging to their section
+    const { isSuperAdmin, userSection } = getIdentity(req.headers);
+    if (!isSuperAdmin && userSection && request.section && request.section.toString() !== userSection) {
+      // Rollback the processing lock
+      await UserRequest.findByIdAndUpdate(requestId, { status: "pending" });
       return NextResponse.json(
-        { error: "This request has already been reviewed" },
-        { status: 400 }
+        { error: "You can only review requests for your own section" },
+        { status: 403 }
       );
     }
 

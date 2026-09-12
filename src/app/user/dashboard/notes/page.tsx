@@ -107,6 +107,9 @@ export default function NotesPage() {
   }, []);
 
   useEffect(() => {
+    // M-04: Prevent stale fetch results overwriting state when rapidly switching filters
+    const controller = new AbortController();
+
     async function fetchNotes() {
       setLoading(true);
       try {
@@ -122,7 +125,7 @@ export default function NotesPage() {
         // "my-section" → no section param, API defaults to user's section
 
         const url = params.toString() ? `/api/notes?${params}` : "/api/notes";
-        const res = await fetch(url);
+        const res = await fetch(url, { signal: controller.signal });
         const data = await res.json();
         let allNotes: Note[] = data.notes || [];
 
@@ -132,12 +135,14 @@ export default function NotesPage() {
 
         setNotes(allNotes);
       } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") return;
         console.error("Failed to fetch notes:", error);
       } finally {
         setLoading(false);
       }
     }
     fetchNotes();
+    return () => controller.abort();
   }, [selectedSubject, streamSubjectIds, selectedSection]);
 
   // Sort notes
@@ -273,14 +278,16 @@ export default function NotesPage() {
             </Card>
           ))}
         </div>
-      ) : notes.length === 0 ? (
+      ) : groupedNotes.length === 0 ? (
         <div className="text-center py-12">
           <div className="mx-auto h-16 w-16 rounded-2xl bg-muted flex items-center justify-center text-2xl mb-4">
             📄
           </div>
-          <h3 className="font-semibold text-lg">No notes available</h3>
+          <h3 className="font-semibold text-lg">No notes found</h3>
           <p className="text-sm text-muted-foreground mt-1">
-            Notes will appear here once they are added by admin.
+            {notes.length === 0 
+              ? "Notes will appear here once they are posted." 
+              : "Try adjusting your filters to see more results."}
           </p>
         </div>
       ) : (

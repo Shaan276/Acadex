@@ -15,6 +15,7 @@ export interface IOTP extends Document {
   newEmail?: string;
   expiresAt: Date;
   verified: boolean;
+  failedAttempts: number;
   createdAt: Date;
 }
 
@@ -50,6 +51,12 @@ const OTPSchema = new Schema<IOTP>(
     verified: {
       type: Boolean,
       default: false,
+    },
+    // H-06: Track failed verification attempts to prevent brute-force attacks.
+    // OTP is invalidated after MAX_OTP_ATTEMPTS (5) incorrect guesses.
+    failedAttempts: {
+      type: Number,
+      default: 0,
     },
   },
   {

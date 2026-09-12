@@ -172,6 +172,7 @@ export const config = {
     "/forgot-password",
     "/about",
     "/contact",
+    "/dashboard",
     "/user/dashboard/:path*",
     "/admin/:path*",
     "/change-password",
@@ -201,5 +202,8 @@ export const config = {
     "/api/push/:path*",
     "/api/upload",
     "/api/upload/:path*",
+    "/api/library/:path*",
+    "/api/pdf-proxy",
+    "/api/jobs/:path*",
   ],
 };

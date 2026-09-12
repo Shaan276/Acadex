@@ -28,6 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { toDownloadUrl } from "@/lib/document-utils";
 import {
   Table,
   TableBody,
@@ -96,16 +97,6 @@ function toEmbedUrl(url: string): string {
   return url;
 }
 
-/** Convert Google Drive URL to direct download URL */
-function toDownloadUrl(url: string): string {
-  const match = url.match(/\/file\/d\/([^/]+)/);
-  if (match)
-    return `https://drive.google.com/uc?export=download&id=${match[1]}`;
-  const idMatch = url.match(/[?&]id=([^&]+)/);
-  if (idMatch)
-    return `https://drive.google.com/uc?export=download&id=${idMatch[1]}`;
-  return url;
-}
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -133,11 +124,14 @@ export default function AdminRequestsPanel() {
   /*  Data fetch                                                       */
   /* ---------------------------------------------------------------- */
 
+  const [subjects, setSubjects] = useState<{ _id: string; name: string; semester?: number }[]>([]);
+
   const fetchData = useCallback(async () => {
     try {
-      const [meRes, reqRes] = await Promise.all([
+      const [meRes, reqRes, subRes] = await Promise.all([
         fetch("/api/auth/me"),
         fetch("/api/user-requests"),
+        fetch("/api/subjects"),
       ]);
 
       if (meRes.ok) {
@@ -148,6 +142,11 @@ export default function AdminRequestsPanel() {
       if (reqRes.ok) {
         const data = await reqRes.json();
         setRequests(data.requests ?? []);
+      }
+      
+      if (subRes.ok) {
+        const data = await subRes.json();
+        setSubjects(data.subjects ?? []);
       }
     } catch {
       toast.error("Failed to load data");
@@ -164,24 +163,13 @@ export default function AdminRequestsPanel() {
   /*  Derived data                                                     */
   /* ---------------------------------------------------------------- */
 
-  // Unique subject options from loaded requests
+  // Unique subject options from global subjects list
   const subjectOptions = useMemo(() => {
-    const map = new Map<string, string>();
-    requests.forEach((r) => {
-      if (r.subject) map.set(r.subject._id, r.subject.name);
-    });
-    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
-  }, [requests]);
+    return subjects.map((s) => ({ id: s._id, name: s.name }));
+  }, [subjects]);
 
-  // Unique semester options from loaded requests (super-admin only)
-  const semesterOptions = useMemo(() => {
-    const set = new Set<number>();
-    requests.forEach((r) => {
-      const sem = (r.subject as PopulatedRef & { semester?: number })?.semester;
-      if (sem) set.add(sem);
-    });
-    return Array.from(set).sort((a, b) => a - b);
-  }, [requests]);
+  // Unique semester options from 1 to 8
+  const semesterOptions = [1, 2, 3, 4, 5, 6, 7, 8];
 
   const filteredRequests = useMemo(() => {
     return requests.filter((r) => {
@@ -604,7 +592,7 @@ export default function AdminRequestsPanel() {
                     </Button>
                   </div>
                 </div>
-                <div className="relative w-full rounded-lg border bg-muted/30 overflow-hidden" style={{ height: "400px" }}>
+                <div className="relative w-full rounded-lg border bg-muted/30 overflow-hidden h-[50vh] min-h-[300px] max-h-[500px]">
                   <iframe
                     src={toEmbedUrl(reviewTarget.file_url)}
                     className="absolute inset-0 w-full h-full border-0"

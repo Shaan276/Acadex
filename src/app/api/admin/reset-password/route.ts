@@ -5,6 +5,7 @@
  */
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
+import { randomBytes } from "crypto";
 import { connectDB } from "@/lib/db";
 import { resetPasswordSchema } from "@/lib/validations";
 import User from "@/models/User";
@@ -15,6 +16,8 @@ export async function POST(request: Request) {
   try {
     const userRole = request.headers.get("x-user-role");
     const adminId = request.headers.get("x-user-id");
+    const isSuperAdmin = request.headers.get("x-is-super-admin") === "true";
+    const adminSection = request.headers.get("x-user-section");
 
     if (userRole !== "admin") {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -34,15 +37,29 @@ export async function POST(request: Request) {
 
     await connectDB();
 
-    const user = await User.findById(userId);
+    const user = await User.findById(userId).select("name college_id role section isSuperAdmin");
     if (!user) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    // Generate temporary password
-    const tempPassword =
-      "temp" +
-      Math.random().toString(36).substring(2, 8).toUpperCase();
+    // C-03: Prevent sub-admins from resetting super-admin passwords
+    if (!isSuperAdmin && user.isSuperAdmin) {
+      return NextResponse.json(
+        { error: "You cannot reset a super-admin's password." },
+        { status: 403 }
+      );
+    }
+
+    // C-03: Prevent sub-admins from resetting users in other sections
+    if (!isSuperAdmin && adminSection && user.section?.toString() !== adminSection) {
+      return NextResponse.json(
+        { error: "You can only reset passwords for users in your own section." },
+        { status: 403 }
+      );
+    }
+
+    // L-02: Use cryptographically secure random bytes instead of Math.random()
+    const tempPassword = "T" + randomBytes(5).toString("hex").toUpperCase();
 
     const passwordHash = await bcrypt.hash(tempPassword, 10);
 

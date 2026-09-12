@@ -7,6 +7,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { ChevronDown } from "lucide-react";
+import { toast } from "sonner";
 import { AssignmentCard } from "@/components/assignment-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -113,17 +114,20 @@ export default function AssignmentsPage() {
     });
 
     try {
+      let res;
       if (isCompleted) {
-        await fetch(`/api/completions?assignmentId=${id}`, { method: "DELETE" });
+        res = await fetch(`/api/completions?assignmentId=${id}`, { method: "DELETE" });
       } else {
-        await fetch("/api/completions", {
+        res = await fetch("/api/completions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ assignmentId: id }),
         });
       }
+      if (!res.ok) throw new Error("Failed to update status");
     } catch {
       // Revert on error
+      toast.error("Failed to update completion status.");
       setCompletedIds((prev) => {
         const next = new Set(prev);
         if (isCompleted) next.add(id);
@@ -173,6 +177,9 @@ export default function AssignmentsPage() {
   }, []);
 
   useEffect(() => {
+    // M-04: AbortController prevents stale responses from overwriting state
+    const controller = new AbortController();
+
     async function fetchAssignments() {
       setLoading(true);
       try {
@@ -187,7 +194,7 @@ export default function AssignmentsPage() {
         }
 
         const url = params.toString() ? `/api/assignments?${params}` : "/api/assignments";
-        const res = await fetch(url);
+        const res = await fetch(url, { signal: controller.signal });
         const data = await res.json();
         let allAssignments: Assignment[] = data.assignments || [];
 
@@ -198,12 +205,14 @@ export default function AssignmentsPage() {
 
         setAssignments(allAssignments);
       } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") return;
         console.error("Failed to fetch assignments:", error);
       } finally {
         setLoading(false);
       }
     }
     fetchAssignments();
+    return () => controller.abort();
   }, [selectedSubject, streamSubjectIds, selectedSection]);
 
   useEffect(() => {
@@ -391,7 +400,7 @@ export default function AssignmentsPage() {
                       <span className="h-1.5 w-1.5 rounded-full bg-amber-500 flex-shrink-0" />
                       <span className="font-medium">{a.title}</span>
                       <span className="text-xs text-amber-600 dark:text-amber-400">
-                        &mdash; due {new Date(a.deadline!).toLocaleString("en-IN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        &mdash; due {new Date(a.deadline!).toLocaleString("en-IN", { month: "short", day: "numeric", timeZone: "UTC" })}
                       </span>
                     </li>
                   ))}
@@ -445,14 +454,16 @@ export default function AssignmentsPage() {
             </Card>
           ))}
         </div>
-      ) : assignments.length === 0 ? (
+      ) : groupedAssignments.length === 0 ? (
         <div className="text-center py-12">
           <div className="mx-auto h-16 w-16 rounded-2xl bg-muted flex items-center justify-center text-2xl mb-4">
             📝
           </div>
-          <h3 className="font-semibold text-lg">No assignments yet</h3>
+          <h3 className="font-semibold text-lg">No assignments found</h3>
           <p className="text-sm text-muted-foreground mt-1">
-            Assignments will appear here once they are posted by admin.
+            {assignments.length === 0
+              ? "Assignments will appear here once they are posted."
+              : "Try adjusting your filters to see more results."}
           </p>
         </div>
       ) : (

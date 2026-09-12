@@ -1,221 +1,370 @@
 /**
  * @page UserLibrary (/user/dashboard/library)
- * @description Library page for students (coming soon — shows rotating jokes).
+ * @description Lists library resources with subject/search filters and download links.
  */
 "use client";
 
-import { useEffect, useState } from "react";
-import Link from "next/link";
+import { useEffect, useState, useMemo } from "react";
+import { useSearchParams } from "next/navigation";
+import { ChevronDown } from "lucide-react";
+import { NoteCard } from "@/components/note-card"; // Reusing NoteCard as ResourceCard
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { fetchMeCached } from "@/lib/client-auth";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
-const jokes = [
-  {
-    emoji: "🏗️",
-    headline: "Hard hats required beyond this point",
-    punchline: "Our devs are hammering away at this page. Literally.",
-  },
-  {
-    emoji: "🧱",
-    headline: "Still laying the bricks!",
-    punchline: "Rome wasn't built in a day, and neither is this library.",
-  },
-  {
-    emoji: "🔧",
-    headline: "Wrench in the works",
-    punchline: "Our engineers are tightening bolts. Please don't touch anything.",
-  },
-  {
-    emoji: "🦺",
-    headline: "Safety first. Features second.",
-    punchline: "We're building something amazing — but OSHA said to slow down.",
-  },
-  {
-    emoji: "📐",
-    headline: "Still reading the blueprints",
-    punchline: "Turns out \"just make a library\" requires more than a sticky note.",
-  },
-  {
-    emoji: "🪜",
-    headline: "Climbing the ladder of development",
-    punchline: "We're at step 3 of 47. Almost halfway there! (Not really.)",
-  },
-  {
-    emoji: "🚧",
-    headline: "Caution: Code crossing ahead",
-    punchline: "Detour through the dashboard while we pave this road.",
-  },
-  {
-    emoji: "🪣",
-    headline: "Pouring the digital concrete",
-    punchline: "It needs 24 hours to set. Please come back in 24 business days.",
-  },
-  {
-    emoji: "🔨",
-    headline: "Nailed it! (The scaffolding, not the feature)",
-    punchline: "The library is being built one commit at a time.",
-  },
-  {
-    emoji: "🏗️",
-    headline: "Your library is under construction",
-    punchline: "Consider this the 'coming soon' trailer for a blockbuster page.",
-  },
-  {
-    emoji: "🛠️",
-    headline: "Tool time!",
-    punchline: "More power! *grunting noises* — Tim \"The Toolman\" Developer",
-  },
-  {
-    emoji: "🎨",
-    headline: "Painting the walls",
-    punchline: "We picked the color 'code blue'. Get it? ...We'll show ourselves out.",
-  },
-  {
-    emoji: "🧰",
-    headline: "Toolbox: open. Feature: pending.",
-    punchline: "We have all the tools. Now we just need a miracle.",
-  },
-  {
-    emoji: "🪵",
-    headline: "Logging some progress",
-    punchline: "console.log('library: almost done™'); // Famous last words.",
-  },
-  {
-    emoji: "🏠",
-    headline: "This page is still in the foundation stage",
-    punchline: "But hey, every mansion starts with a hole in the ground!",
-  },
-  {
-    emoji: "⚙️",
-    headline: "Gears are turning (slowly)",
-    punchline: "If you listen closely you can hear the server room crying.",
-  },
-  {
-    emoji: "🧲",
-    headline: "Attracting features, one magnet at a time",
-    punchline: "The library is pulling in resources. Slowly. Very slowly.",
-  },
-  {
-    emoji: "🏋️",
-    headline: "Heavy lifting in progress",
-    punchline: "Our devs are bench-pressing 200 lines of code right now.",
-  },
-  {
-    emoji: "🧬",
-    headline: "Still in the DNA stage",
-    punchline: "This feature is evolving. Give it a few million... milliseconds.",
-  },
-  {
-    emoji: "🎪",
-    headline: "The big reveal is coming!",
-    punchline: "Step right up! The library will appear... eventually.",
-  },
-  {
-    emoji: "🗿",
-    headline: "As patient as a statue",
-    punchline: "This page has been waiting so long it turned to stone.",
-  },
-  {
-    emoji: "🧑‍🍳",
-    headline: "Still cooking!",
-    punchline: "The library is in the oven. Don't open it or the soufflé will collapse.",
-  },
-  {
-    emoji: "🪄",
-    headline: "Abracadabra... nope, not yet",
-    punchline: "Our wizards are still learning the spell to summon this page.",
-  },
-  {
-    emoji: "🧊",
-    headline: "Feature frozen... on purpose",
-    punchline: "It's in the deep freeze of our backlog. Thawing soon™.",
-  },
-  {
-    emoji: "🐌",
-    headline: "Slow and steady builds the library",
-    punchline: "We're on snail-powered servers. Please understand.",
-  },
-  {
-    emoji: "🎬",
-    headline: "Take 47... and ACTION!",
-    punchline: "The library scene keeps getting rewritten. The director is very picky.",
-  },
-  {
-    emoji: "🗂️",
-    headline: "Filing the paperwork",
-    punchline: "Turns out building a library requires an actual library of paperwork.",
-  },
-  {
-    emoji: "🔬",
-    headline: "Under the microscope",
-    punchline: "We're examining every pixel. This page must be *perfect*.",
-  },
-  {
-    emoji: "🪴",
-    headline: "Growing organically",
-    punchline: "We planted the seed. Now we water it with coffee and prayers.",
-  },
-  {
-    emoji: "🛸",
-    headline: "Beam me up, library!",
-    punchline: "This feature is coming from another galaxy. ETA: unknown.",
-  },
-];
+interface Subject {
+  _id: string;
+  name: string;
+  semester?: number;
+}
 
-export default function UserLibraryPage() {
-  const [joke, setJoke] = useState(jokes[0]);
+interface SectionItem {
+  _id: string;
+  name: string;
+}
+
+interface LibraryResource {
+  _id: string;
+  title: string;
+  fileUrl: string;
+  createdAt: string;
+  resourceType: string;
+  subject: { _id: string; name: string };
+  section?: { _id: string; name: string } | null;
+}
+
+export default function LibraryPage() {
+  const searchParams = useSearchParams();
+  const initialSubject = searchParams.get("subject") || "all";
+
+  const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [resources, setResources] = useState<LibraryResource[]>([]);
+  const [selectedSubject, setSelectedSubject] = useState(initialSubject);
+  const [sortOrder, setSortOrder] = useState<string>("newest");
+  const [loading, setLoading] = useState(true);
+  const [streamSubjectIds, setStreamSubjectIds] = useState<Set<string> | null>(null);
+  const [sections, setSections] = useState<SectionItem[]>([]);
+  const [userSectionId, setUserSectionId] = useState<string | null>(null);
+  const [userSectionName, setUserSectionName] = useState<string | null>(null);
+  const [selectedSection, setSelectedSection] = useState<string>("my-section");
+  const [expandedSubjectIds, setExpandedSubjectIds] = useState<Set<string>>(new Set());
+
+  const toggleExpandSubject = (subjectId: string) => {
+    setExpandedSubjectIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(subjectId)) {
+        next.delete(subjectId);
+      } else {
+        next.add(subjectId);
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
-    setJoke(jokes[Math.floor(Math.random() * jokes.length)]);
+    async function fetchInit() {
+      try {
+        const mePromise = fetchMeCached();
+        const [subjectsRes, sectionsRes] = await Promise.all([
+          fetch("/api/subjects"),
+          fetch("/api/sections"),
+        ]);
+        const subjectsData = await subjectsRes.json();
+        const meData = await mePromise;
+        const sectionsData = sectionsRes.ok ? await sectionsRes.json() : { sections: [] };
+
+        setSections(sectionsData.sections || []);
+
+        // Set user's section
+        if (meData.user?.section?.id) {
+          setUserSectionId(meData.user.section.id);
+          setUserSectionName(meData.user.section.name);
+        }
+
+        const allSubjects: Subject[] = subjectsData.subjects || [];
+
+        // Filter subjects by user's semester (super admin gets all subjects from API)
+        const userSemester: number | null = meData.user?.semester || null;
+        const semesterSubjects = allSubjects.filter((s) => {
+          if (userSemester && s.semester && s.semester !== userSemester) return false;
+          return true;
+        });
+
+        const visibleSubjectIds = new Set(semesterSubjects.map((s) => s._id));
+        setStreamSubjectIds(visibleSubjectIds);
+        setSubjects(semesterSubjects);
+      } catch (error) {
+        console.error("Failed to fetch subjects:", error);
+      }
+    }
+    fetchInit();
   }, []);
 
+  useEffect(() => {
+    // M-04: Prevent stale fetch results overwriting state when rapidly switching filters
+    const controller = new AbortController();
+
+    async function fetchResources() {
+      setLoading(true);
+      try {
+        const params = new URLSearchParams();
+        if (selectedSubject !== "all") params.set("subject", selectedSubject);
+
+        // Section filter: "my-section" = default (API auto-filters), "all" = all sections, specific ID = that section
+        if (selectedSection === "all") {
+          params.set("section", "all");
+        } else if (selectedSection !== "my-section" && selectedSection) {
+          params.set("section", selectedSection);
+        }
+        // "my-section" → no section param, API defaults to user's section
+
+        const url = params.toString() ? `/api/library?${params}` : "/api/library";
+        const res = await fetch(url, { signal: controller.signal });
+        const data = await res.json();
+        let allResources: LibraryResource[] = data.resources || [];
+
+        if (selectedSubject === "all" && streamSubjectIds) {
+          allResources = allResources.filter((n) => n.subject && streamSubjectIds.has(n.subject._id));
+        }
+
+        setResources(allResources);
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") return;
+        console.error("Failed to fetch library resources:", error);
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchResources();
+    return () => controller.abort();
+  }, [selectedSubject, streamSubjectIds, selectedSection]);
+
+  // Sort resources
+  const sortedResources = useMemo(() => {
+    return [...resources].sort((a, b) => {
+      switch (sortOrder) {
+        case "newest":
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        case "oldest":
+          return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+        case "name-az":
+          return a.title.localeCompare(b.title);
+        case "name-za":
+          return b.title.localeCompare(a.title);
+        default:
+          return 0;
+      }
+    });
+  }, [resources, sortOrder]);
+
+  // Group resources by subject
+  const groupedResources = useMemo(() => {
+    const grouped: Record<
+      string,
+      { subjectId: string; subjectName: string; resources: LibraryResource[] }
+    > = {};
+
+    for (const resource of sortedResources) {
+      const subjectId = resource.subject?._id || "unknown";
+      const subjectName = resource.subject?.name || "Unknown";
+
+      if (!grouped[subjectId]) {
+        grouped[subjectId] = { subjectId, subjectName, resources: [] };
+      }
+      grouped[subjectId].resources.push(resource);
+    }
+
+    return Object.values(grouped).sort((a, b) =>
+      a.subjectName.localeCompare(b.subjectName)
+    );
+  }, [sortedResources]);
+
+  // Auto-expand selected subject when a specific subject filter is applied.
+  useEffect(() => {
+    if (selectedSubject !== "all") {
+      setExpandedSubjectIds(new Set([selectedSubject]));
+    }
+  }, [selectedSubject]);
+
   return (
-    <div className="min-h-[70vh] flex items-center justify-center p-4">
-      <div className="text-center max-w-md w-full space-y-8">
-        {/* Animated WIP badge */}
-        <div className="relative">
-          <h1 className="text-[8rem] font-black leading-none tracking-tighter text-primary/10 select-none">
-            WIP
-          </h1>
-          <div className="absolute inset-0 flex items-center justify-center">
-            <span className="text-7xl animate-bounce">{joke.emoji}</span>
-          </div>
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Library</h1>
+          <p className="text-muted-foreground">
+            Browse subject-wise library resources
+          </p>
         </div>
-
-        {/* Joke content */}
-        <div className="space-y-3">
-          <h2 className="text-2xl font-bold tracking-tight">
-            {joke.headline}
-          </h2>
-          <p className="text-muted-foreground text-lg">{joke.punchline}</p>
-        </div>
-
-        {/* Button */}
-        <div className="flex items-center justify-center pt-4">
-          <Link
-            href="/user/dashboard"
-            className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-primary text-primary-foreground font-semibold shadow-lg shadow-primary/25 hover:shadow-xl hover:shadow-primary/30 hover:-translate-y-0.5 transition-all"
-          >
-            <svg
-              className="h-4 w-4"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
+        <div className="flex flex-wrap gap-2 items-center">
+          <Select value={sortOrder} onValueChange={setSortOrder}>
+            <SelectTrigger className="w-full sm:w-[160px] rounded-xl">
+              <SelectValue placeholder="Sort by" />
+            </SelectTrigger>
+            <SelectContent className="rounded-xl">
+              <SelectItem value="newest">Newest first</SelectItem>
+              <SelectItem value="oldest">Oldest first</SelectItem>
+              <SelectItem value="name-az">Name A-Z</SelectItem>
+              <SelectItem value="name-za">Name Z-A</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={selectedSubject} onValueChange={setSelectedSubject}>
+            <SelectTrigger className="w-full sm:w-[180px] rounded-xl">
+              <SelectValue placeholder="Filter by subject" />
+            </SelectTrigger>
+            <SelectContent className="rounded-xl">
+              <SelectItem value="all">All Subjects</SelectItem>
+              {subjects.map((s) => (
+                <SelectItem key={s._id} value={s._id}>
+                  {s.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={selectedSection} onValueChange={setSelectedSection}>
+            <SelectTrigger className="w-full sm:w-[180px] rounded-xl">
+              <SelectValue placeholder="Filter by section" />
+            </SelectTrigger>
+            <SelectContent className="rounded-xl">
+              <SelectItem value="my-section">
+                🏫 {userSectionName || "My Section"}
+              </SelectItem>
+              <SelectItem value="all">All Sections</SelectItem>
+              {sections
+                .filter((s) => s._id !== userSectionId)
+                .map((s) => (
+                  <SelectItem key={s._id} value={s._id}>
+                    🏫 {s.name}
+                  </SelectItem>
+                ))}
+            </SelectContent>
+          </Select>
+          {(sortOrder !== "newest" || selectedSubject !== "all" || selectedSection !== "my-section") && (
+            <button
+              className="text-xs text-primary hover:underline whitespace-nowrap"
+              onClick={() => {
+                setSortOrder("newest");
+                setSelectedSubject("all");
+                setSelectedSection("my-section");
+              }}
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"
-              />
-            </svg>
-            Back to Dashboard
-          </Link>
+              Reset filters
+            </button>
+          )}
         </div>
-
-        {/* Footer */}
-        <p className="text-xs text-muted-foreground/60 pt-8">
-          Acadex &bull; Good things take time 🚧
-        </p>
       </div>
+
+      {/* Resources Grouped by Subject */}
+      {loading ? (
+        <div className="space-y-6">
+          {[1, 2].map((i) => (
+            <Card key={i} className="rounded-2xl animate-pulse">
+              <CardHeader className="pb-3">
+                <div className="h-5 w-40 bg-muted rounded-lg" />
+              </CardHeader>
+              <CardContent>
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {[1, 2, 3].map((j) => (
+                    <div key={j} className="h-24 bg-muted rounded-xl" />
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : groupedResources.length === 0 ? (
+        <div className="text-center py-12">
+          <div className="mx-auto h-16 w-16 rounded-2xl bg-muted flex items-center justify-center text-2xl mb-4">
+            📚
+          </div>
+          <h3 className="font-semibold text-lg">No resources found</h3>
+          <p className="text-sm text-muted-foreground mt-1">
+            {resources.length === 0 
+              ? "Resources will appear here once they are posted." 
+              : "Try adjusting your filters to see more results."}
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {groupedResources.map((group) => {
+            const isExpanded =
+              selectedSubject === "all"
+                ? expandedSubjectIds.has(group.subjectId)
+                : group.subjectId === selectedSubject;
+
+            return (
+              <Card
+                key={group.subjectId}
+                className="rounded-2xl overflow-hidden py-0 gap-0"
+              >
+                <CardHeader className="p-0">
+                  <button
+                    type="button"
+                    className={`w-full flex items-center justify-between gap-3 px-4 py-3 text-left transition-colors duration-150 hover:bg-muted/50 ${
+                      selectedSubject !== "all" ? "cursor-default" : "cursor-pointer"
+                    }`}
+                    onClick={() => {
+                      if (selectedSubject !== "all") return;
+                      toggleExpandSubject(group.subjectId);
+                    }}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="flex-shrink-0 flex items-center justify-center h-6 w-6 rounded-md bg-muted text-xs">
+                        📚
+                      </span>
+                      <CardTitle className="text-sm font-medium truncate">
+                        {group.subjectName}
+                      </CardTitle>
+                      <Badge
+                        variant="secondary"
+                        className="rounded-full text-xs flex-shrink-0"
+                      >
+                        {group.resources.length}
+                      </Badge>
+                    </div>
+                    <ChevronDown
+                      className={`flex-shrink-0 h-4 w-4 text-muted-foreground transition-transform duration-300 ease-in-out ${
+                        isExpanded ? "rotate-180" : ""
+                      }`}
+                    />
+                  </button>
+                </CardHeader>
+
+                <div
+                  className={`grid transition-all duration-300 ease-in-out ${
+                    isExpanded
+                      ? "grid-rows-[1fr] opacity-100"
+                      : "grid-rows-[0fr] opacity-0"
+                  }`}
+                >
+                  <div className="overflow-hidden">
+                    <CardContent className="pt-2 pb-5">
+                      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                        {group.resources.map((resource) => (
+                          <NoteCard
+                            key={resource._id}
+                            title={resource.title}
+                            subjectName={resource.resourceType || "Library Resource"}
+                            fileUrl={resource.fileUrl}
+                            uploadedAt={resource.createdAt}
+                          />
+                        ))}
+                      </div>
+                    </CardContent>
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

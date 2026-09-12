@@ -50,10 +50,15 @@ export async function GET(request: Request) {
 
     // Section filtering
     let sectionFilterOr: Record<string, any>[] | null = null;
-    if (userRole === "admin" && !isSuperAdmin && allowedSections.length > 0) {
-      if (sectionParam && sectionParam !== "all") {
-        sectionFilterOr = [{ section: sectionParam }, { sections: sectionParam }];
-      } else if (sectionParam !== "all") {
+    if (userRole === "admin" && !isSuperAdmin) {
+      // M-02: Prevent section=all bypass for sub-admins
+      const querySection = sectionParam && sectionParam !== "all" ? sectionParam : null;
+      if (querySection) {
+        if (allowedSections.length > 0 && !allowedSections.includes(querySection)) {
+          return NextResponse.json({ resources: [] });
+        }
+        sectionFilterOr = [{ section: querySection }, { sections: querySection }];
+      } else if (allowedSections.length > 0) {
         sectionFilterOr = [
           { section: { $in: allowedSections } },
           { sections: { $in: allowedSections } }
@@ -83,14 +88,33 @@ export async function GET(request: Request) {
       filter.$or = searchFilterOr;
     }
 
+    const pageParam = searchParams.get("page");
+    const limitParam = searchParams.get("limit");
+    
+    const page = pageParam ? Math.max(1, parseInt(pageParam) || 1) : 1;
+    const limit = limitParam ? Math.max(1, parseInt(limitParam) || 50) : 50;
+    const skip = (page - 1) * limit;
+
     const resources = await LibraryResource.find(filter)
       .populate("subject", "name type")
       .populate("section", "name")
       .populate("uploadedBy", "name")
       .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
       .lean();
 
-    return NextResponse.json({ resources });
+    const total = await LibraryResource.countDocuments(filter);
+
+    return NextResponse.json({ 
+      resources,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
   } catch (error) {
     console.error("List library resources error:", error);
     return NextResponse.json(

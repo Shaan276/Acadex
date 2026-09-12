@@ -206,9 +206,15 @@ export async function uploadToGoogleDriveHierarchy({
       for (const f of searchRes.data.files) {
         if (f.id) {
           try {
-            await drive.files.delete({ fileId: f.id, supportsAllDrives: true });
+            // C-05: Move to trash instead of permanent delete — preserves file IDs
+            // referenced by other DB records (notes, assignments, practicals).
+            await drive.files.update({
+              fileId: f.id,
+              supportsAllDrives: true,
+              requestBody: { trashed: true },
+            });
           } catch (e) {
-            console.error("Failed to delete existing duplicate file:", e);
+            console.error("Failed to trash existing duplicate file:", e);
           }
         }
       }
@@ -302,9 +308,15 @@ export async function initResumableDriveUpload({
       for (const f of searchRes.data.files) {
         if (f.id) {
           try {
-            await drive.files.delete({ fileId: f.id, supportsAllDrives: true });
+            // C-05: Move to trash instead of permanent delete — preserves file IDs
+            // referenced by other DB records (notes, assignments, practicals).
+            await drive.files.update({
+              fileId: f.id,
+              supportsAllDrives: true,
+              requestBody: { trashed: true },
+            });
           } catch (e) {
-            console.error("Failed to delete existing duplicate file:", e);
+            console.error("Failed to trash existing duplicate file:", e);
           }
         }
       }

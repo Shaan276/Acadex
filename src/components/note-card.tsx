@@ -10,17 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MagicCard } from "@/components/ui/magic-card";
 import Link from "next/link";
-
-function toDownloadUrl(url: string): string {
-  try {
-    const fileMatch = url.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
-    if (fileMatch) return `https://drive.google.com/uc?export=download&id=${fileMatch[1]}`;
-    const parsed = new URL(url);
-    const idParam = parsed.searchParams.get("id");
-    if (parsed.hostname === "drive.google.com" && idParam) return `https://drive.google.com/uc?export=download&id=${idParam}`;
-  } catch {}
-  return url;
-}
+import { toDownloadUrl } from "@/lib/document-utils";
 
 interface NoteCardProps {
   title: string;

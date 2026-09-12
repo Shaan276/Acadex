@@ -47,10 +47,23 @@ export async function POST(request: Request) {
       );
     }
 
+    // H-06: Brute-force protection — reject if too many failed attempts
+    const MAX_ATTEMPTS = 5;
+    if ((otpRecord.failedAttempts ?? 0) >= MAX_ATTEMPTS) {
+      await OTP.deleteOne({ _id: otpRecord._id });
+      return NextResponse.json(
+        { error: "Too many incorrect attempts. Please request a new OTP." },
+        { status: 429 }
+      );
+    }
+
     // Verify code
     if (otpRecord.code !== code.toString().trim()) {
+      // Increment failed attempts counter
+      await OTP.updateOne({ _id: otpRecord._id }, { $inc: { failedAttempts: 1 } });
+      const attemptsLeft = MAX_ATTEMPTS - ((otpRecord.failedAttempts ?? 0) + 1);
       return NextResponse.json(
-        { error: "Invalid OTP code" },
+        { error: `Invalid OTP code. ${attemptsLeft} attempt${attemptsLeft !== 1 ? "s" : ""} remaining.` },
         { status: 400 }
       );
     }

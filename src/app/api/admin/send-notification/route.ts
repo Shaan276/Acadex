@@ -16,6 +16,8 @@ type AudienceType = "all" | "semester" | "section" | "users";
 export async function POST(request: Request) {
   try {
     const userRole = request.headers.get("x-user-role");
+    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
+    const adminSection = request.headers.get("x-user-section");
 
     if (userRole !== "admin") {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -54,11 +56,25 @@ export async function POST(request: Request) {
 
     let targetUserIds: string[] = [];
     if (audience === "all") {
-      targetUserIds = await resolveUserIdsForAudience({ targetType: "all" });
+      // M-03: If not super admin, sending to "all" should actually just send to their own section.
+      if (!isSuperAdmin && adminSection) {
+        targetUserIds = await resolveUserIdsForAudience({
+          targetType: "section",
+          sectionId: adminSection,
+        });
+      } else {
+        targetUserIds = await resolveUserIdsForAudience({ targetType: "all" });
+      }
     } else if (audience === "semester") {
       if (!semester || Number.isNaN(Number(semester))) {
         return NextResponse.json({ error: "semester is required" }, { status: 400 });
       }
+      
+      // M-03: If not super admin, they can't broadcast to an entire semester across all sections.
+      if (!isSuperAdmin) {
+        return NextResponse.json({ error: "Only super-admins can broadcast to an entire semester." }, { status: 403 });
+      }
+
       targetUserIds = await resolveUserIdsForAudience({
         targetType: "semester",
         semester: Number(semester),
@@ -67,6 +83,12 @@ export async function POST(request: Request) {
       if (!sectionId) {
         return NextResponse.json({ error: "sectionId is required" }, { status: 400 });
       }
+
+      // M-03: Sub-admins can only broadcast to their own section
+      if (!isSuperAdmin && adminSection && sectionId !== adminSection) {
+        return NextResponse.json({ error: "You can only broadcast to your own section." }, { status: 403 });
+      }
+
       targetUserIds = await resolveUserIdsForAudience({
         targetType: "section",
         sectionId,

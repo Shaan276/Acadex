@@ -117,10 +117,15 @@ export async function GET(request: Request) {
     if (userSection) allowedSections.push(userSection);
     allowedSections = Array.from(new Set([...allowedSections, ...assignedSections]));
 
-    if (userRole === "admin" && !isSuperAdmin && allowedSections.length > 0) {
-      if (sectionParam && sectionParam !== "all") {
-        filter.$or = [{ section: sectionParam }, { sections: sectionParam }];
-      } else if (sectionParam !== "all") {
+    if (userRole === "admin" && !isSuperAdmin) {
+      // M-02: Prevent section=all bypass for sub-admins
+      const querySection = sectionParam && sectionParam !== "all" ? sectionParam : null;
+      if (querySection) {
+        if (allowedSections.length > 0 && !allowedSections.includes(querySection)) {
+          return NextResponse.json({ assignments: [] });
+        }
+        filter.$or = [{ section: querySection }, { sections: querySection }];
+      } else if (allowedSections.length > 0) {
         filter.$or = [
           { section: { $in: allowedSections } },
           { sections: { $in: allowedSections } }
@@ -132,15 +137,35 @@ export async function GET(request: Request) {
       filter.$or = [{ section: userSection }, { sections: userSection }];
     }
 
+    const pageParam = searchParams.get("page");
+    const limitParam = searchParams.get("limit");
+    
+    // Default to 50 items per page if not specified
+    const page = pageParam ? Math.max(1, parseInt(pageParam) || 1) : 1;
+    const limit = limitParam ? Math.max(1, parseInt(limitParam) || 50) : 50;
+    const skip = (page - 1) * limit;
+
     const assignments = await Assignment.find(filter)
       .populate("subject", "name type semester")
       .populate("section", "name")
       .populate("sections", "name")
       .populate("uploadedBy", "name")
       .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
       .lean();
 
-    return NextResponse.json({ assignments });
+    const total = await Assignment.countDocuments(filter);
+
+    return NextResponse.json({ 
+      assignments,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
   } catch (error) {
     console.error("List assignments error:", error);
     return NextResponse.json(

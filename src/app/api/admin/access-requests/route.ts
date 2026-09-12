@@ -125,6 +125,15 @@ export async function PATCH(request: Request) {
       );
     }
 
+    // H-04: Cross-section IDOR guard — sub-admins can only process requests for their section
+    const adminSection = request.headers.get("x-user-section");
+    if (!isSuperAdmin && adminSection && accessReq.section?.toString() !== adminSection) {
+      return NextResponse.json(
+        { error: "You can only manage access requests for your own section." },
+        { status: 403 }
+      );
+    }
+
     if (action === "approve") {
       // Check if user with same college_id already exists
       const existingUser = await User.findOne({ college_id: accessReq.college_id });
@@ -315,13 +324,23 @@ export async function DELETE(request: Request) {
 
     await connectDB();
 
-    const deleted = await AccessRequest.findByIdAndDelete(requestId);
+    const deleted = await AccessRequest.findById(requestId);
     if (!deleted) {
       return NextResponse.json(
         { error: "Access request not found" },
         { status: 404 }
       );
     }
+
+    // H-04: Cross-section IDOR guard
+    if (!isSuperAdmin && adminSection && deleted.section?.toString() !== adminSection) {
+      return NextResponse.json(
+        { error: "You can only delete access requests for your own section." },
+        { status: 403 }
+      );
+    }
+
+    await AccessRequest.findByIdAndDelete(requestId);
 
     return NextResponse.json({ success: true });
   } catch (error) {

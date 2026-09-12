@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { fetchMeCached } from "@/lib/client-auth";
 import { CheckCircle2, Eye, Download, Clock, Loader2 } from "lucide-react";
+import { toDownloadUrl } from "@/lib/document-utils";
 
 interface AssignmentItem {
   _id: string;
@@ -43,7 +44,13 @@ export default function PendingWorkPage() {
   const [userSubjectIds, setUserSubjectIds] = useState<Set<string> | null>(null);
   const [loading, setLoading] = useState(true);
   const [togglingId, setTogglingId] = useState<string | null>(null);
-  const [referenceNow] = useState(() => Date.now());
+  const [referenceNow, setReferenceNow] = useState(() => Date.now());
+
+  // M-15: Refresh reference time every minute so 'due soon' status doesn't go stale
+  useEffect(() => {
+    const interval = setInterval(() => setReferenceNow(Date.now()), 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     async function fetchData() {
@@ -162,7 +169,7 @@ export default function PendingWorkPage() {
       return;
     }
     const a = document.createElement("a");
-    a.href = fileUrl;
+    a.href = toDownloadUrl(fileUrl);
     a.target = "_blank";
     a.download = `${title || "document"}.pdf`;
     document.body.appendChild(a);
@@ -245,8 +252,7 @@ export default function PendingWorkPage() {
                     <span>⏰ <strong>Due:</strong> {item.deadline ? new Date(item.deadline).toLocaleString("en-IN", {
                       month: "short",
                       day: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
+                      timeZone: "UTC",
                     }) : "No deadline"}</span>
                   </div>
 
@@ -318,8 +324,7 @@ export default function PendingWorkPage() {
                   <span>⏰ <strong>Due:</strong> {item.deadline ? new Date(item.deadline).toLocaleString("en-IN", {
                     month: "short",
                     day: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
+                    timeZone: "UTC",
                   }) : "No deadline"}</span>
                 </div>
 

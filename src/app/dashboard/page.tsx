@@ -9,8 +9,10 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { SubjectCard } from "@/components/subject-card";
 import { fetchMeCached } from "@/lib/client-auth";
+import { toast } from "sonner";
 
 interface Subject {
   _id: string;
@@ -62,6 +64,7 @@ export default function StudentDashboard() {
   const [completedIds, setCompletedIds] = useState<Set<string>>(new Set());
   const [practicalCompletedIds, setPracticalCompletedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [stream, setStream] = useState<StreamData | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("list");
 
@@ -107,8 +110,10 @@ export default function StudentDashboard() {
         }
 
         // Get stream subject IDs for filtering
-        const streamSubjectIds: Set<string> | null = meData.user?.stream?.subjects?.length
-          ? new Set(meData.user.stream.subjects.map((s: Subject) => s._id))
+        // H-18: If the user is assigned to a stream, ONLY show subjects in that stream (even if 0).
+        // If they are not assigned to any stream (e.g., legacy or admin), show everything.
+        const streamSubjectIds: Set<string> | null = meData.user?.stream
+          ? new Set((meData.user.stream.subjects || []).map((s: Subject) => s._id))
           : null;
 
         // Filter subjects by stream (if assigned)
@@ -144,6 +149,8 @@ export default function StudentDashboard() {
         setPracticalCompletedIds(new Set(practicalCompletionsData.completedIds || []));
       } catch (error) {
         console.error("Failed to fetch dashboard data:", error);
+        setError("Failed to load your dashboard. Please refresh the page.");
+        toast.error("Failed to load dashboard data.");
       } finally {
         setLoading(false);
       }
@@ -239,6 +246,29 @@ export default function StudentDashboard() {
             </Card>
           ))}
         </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
+          <p className="text-muted-foreground">Error loading dashboard</p>
+        </div>
+        <Card className="rounded-2xl border-destructive/50 bg-destructive/10">
+          <CardContent className="p-12 text-center">
+            <div className="mx-auto h-16 w-16 rounded-full bg-destructive/20 flex items-center justify-center text-3xl mb-4">
+              ⚠️
+            </div>
+            <h3 className="font-semibold text-xl text-destructive mb-2">Oops! Something went wrong</h3>
+            <p className="text-muted-foreground mb-6">{error}</p>
+            <Button onClick={() => window.location.reload()} variant="outline" className="rounded-xl">
+              Refresh Page
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     );
   }
@@ -373,7 +403,7 @@ export default function StudentDashboard() {
                   ))}
                 </ul>
                 <button
-                  onClick={() => router.push("/dashboard/assignments")}
+                  onClick={() => router.push("/user/dashboard/assignments")}
                   className="mt-3 text-xs font-semibold text-amber-700 dark:text-amber-300 hover:text-amber-900 dark:hover:text-amber-100 underline underline-offset-2"
                 >
                   Go to Assignments →
@@ -556,13 +586,13 @@ export default function StudentDashboard() {
             </div>
             <div className="flex gap-3 text-sm">
               <button
-                onClick={() => router.push("/dashboard/practicals")}
+                onClick={() => router.push("/user/dashboard/practicals")}
                 className="text-teal-600 dark:text-teal-400 hover:underline font-medium whitespace-nowrap"
               >
                 Practicals →
               </button>
               <button
-                onClick={() => router.push("/dashboard/assignments")}
+                onClick={() => router.push("/user/dashboard/assignments")}
                 className="text-primary hover:underline font-medium whitespace-nowrap"
               >
                 Assignments →
@@ -605,7 +635,7 @@ export default function StudentDashboard() {
                   completedCount={assignDone}
                   practicalCount={pracTotal}
                   practicalCompletedCount={pracDone}
-                  onClick={() => router.push(`/dashboard/notes?subject=${subject._id}`)}
+                  onClick={() => router.push(`/user/dashboard/notes?subject=$subject._id`)}
                 />
               );
             })}
@@ -629,7 +659,7 @@ export default function StudentDashboard() {
                   <div
                     key={subject._id}
                     className="flex items-center gap-3 p-3 border rounded-xl hover:bg-muted/30 cursor-pointer transition-colors"
-                    onClick={() => router.push(`/dashboard/notes?subject=${subject._id}`)}
+                    onClick={() => router.push(`/user/dashboard/notes?subject=$subject._id`)}
                   >
                     <span className="text-lg shrink-0">📚</span>
                     <div className="flex-1 min-w-0">
@@ -680,7 +710,7 @@ export default function StudentDashboard() {
                       <tr
                         key={subject._id}
                         className="hover:bg-muted/30 cursor-pointer transition-colors"
-                        onClick={() => router.push(`/dashboard/notes?subject=${subject._id}`)}
+                        onClick={() => router.push(`/user/dashboard/notes?subject=$subject._id`)}
                       >
                         <td className="px-4 py-3 font-medium">
                           <div className="flex items-center gap-2">
@@ -740,7 +770,7 @@ export default function StudentDashboard() {
                 <Card
                   key={subject._id}
                   className="rounded-2xl cursor-pointer hover:shadow-lg transition-all hover:-translate-y-0.5"
-                  onClick={() => router.push(`/dashboard/notes?subject=${subject._id}`)}
+                  onClick={() => router.push(`/user/dashboard/notes?subject=$subject._id`)}
                 >
                   <CardContent className="p-5">
                     <div className="flex items-start justify-between mb-4">

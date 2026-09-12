@@ -11,6 +11,7 @@ import User from "@/models/User";
 import Note from "@/models/Note";
 import Assignment from "@/models/Assignment";
 import Practical from "@/models/Practical";
+import mongoose from "mongoose";
 
 // PUT /api/sections/[id] — update section name (super admin or admin with isAdminSection)
 export async function PUT(
@@ -138,10 +139,11 @@ export async function DELETE(
     }
 
     // Block deletion if content references this section
-    const noteCount = await Note.countDocuments({ section: id });
-    const assignmentCount = await Assignment.countDocuments({ section: id });
-    const practicalCount = await Practical.countDocuments({ section: id });
-    const contentCount = noteCount + assignmentCount + practicalCount;
+    const noteCount = await Note.countDocuments({ $or: [{ section: id }, { sections: id }] });
+    const assignmentCount = await Assignment.countDocuments({ $or: [{ section: id }, { sections: id }] });
+    const practicalCount = await Practical.countDocuments({ $or: [{ section: id }, { sections: id }] });
+    const libraryCount = mongoose.models.LibraryResource ? await mongoose.models.LibraryResource.countDocuments({ $or: [{ section: id }, { sections: id }] }) : 0;
+    const contentCount = noteCount + assignmentCount + practicalCount + libraryCount;
 
     if (contentCount > 0) {
       return NextResponse.json(

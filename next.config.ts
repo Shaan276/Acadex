@@ -4,11 +4,6 @@ const nextConfig: NextConfig = {
   compress: true,
 
   turbopack: {},
-  serverExternalPackages: ["pdfjs-dist"],
-  webpack: (config) => {
-    config.resolve.alias.canvas = false;
-    return config;
-  },
 
   images: {
     formats: ["image/avif", "image/webp"],
@@ -48,6 +43,15 @@ const nextConfig: NextConfig = {
       },
       {
         source: "/images/(.*)",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable",
+          },
+        ],
+      },
+      {
+        source: "/udoc/(.*)",
         headers: [
           {
             key: "Cache-Control",

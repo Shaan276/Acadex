@@ -37,6 +37,7 @@ export function FileUploadInput({
   label = "PDF Document / File",
 }: FileUploadInputProps) {
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [showManualUrl, setShowManualUrl] = useState(false);
@@ -44,6 +45,7 @@ export function FileUploadInput({
 
   const handleSelectFile = async (file: File) => {
     setUploadError(null);
+    setUploadProgress(0);
 
     // If onFileStaged callback is provided, stage the file locally (deferred upload)
     if (onFileStaged) {
@@ -61,9 +63,12 @@ export function FileUploadInput({
           semester,
           subjectName,
           resourceType,
+          onProgress: (percent) => setUploadProgress(percent),
         });
         onChange(fileUrl);
       } else {
+        // Fallback for smaller files: simulate a bit of progress or handle XMLHttpRequest
+        // For simplicity, we just set to 100 on done, or rely on fetch.
         const formData = new FormData();
         formData.append("file", file);
         formData.append("streamName", streamName);
@@ -87,6 +92,7 @@ export function FileUploadInput({
           throw new Error(data.error || "Failed to upload file.");
         }
 
+        setUploadProgress(100);
         onChange(data.fileUrl);
       }
     } catch (err) {
@@ -96,6 +102,7 @@ export function FileUploadInput({
       );
     } finally {
       setUploading(false);
+      setUploadProgress(0);
     }
   };
 
@@ -110,9 +117,19 @@ export function FileUploadInput({
     e.preventDefault();
     setIsDragOver(false);
     const file = e.dataTransfer.files?.[0];
-    if (file) {
-      void handleSelectFile(file);
+    if (!file) return;
+
+    // H-08: Validate dropped file type — must match allowed extensions.
+    // The HTML <input accept> only restricts the OS file picker, not drag-and-drop.
+    const ALLOWED_EXTENSIONS = /\.(pdf|png|jpg|jpeg|doc|docx|ppt|pptx|xls|xlsx)$/i;
+    if (!ALLOWED_EXTENSIONS.test(file.name)) {
+      toast.error(
+        `File type not allowed. Please upload a PDF, image, or Office document.`
+      );
+      return;
     }
+
+    void handleSelectFile(file);
   };
 
   const handleClear = () => {
@@ -202,11 +219,18 @@ export function FileUploadInput({
           />
 
           {uploading ? (
-            <div className="flex flex-col items-center py-2 gap-2">
+            <div className="flex flex-col items-center py-2 gap-2 w-full max-w-xs mx-auto">
               <Loader2 className="h-6 w-6 animate-spin text-primary" />
-              <p className="text-xs font-medium text-muted-foreground">
-                Processing file...
-              </p>
+              <div className="w-full flex items-center justify-between text-xs font-medium text-muted-foreground mb-1">
+                <span>Uploading...</span>
+                <span>{uploadProgress}%</span>
+              </div>
+              <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-primary transition-all duration-300 ease-out" 
+                  style={{ width: `${uploadProgress}%` }} 
+                />
+              </div>
             </div>
           ) : (
             <div className="flex flex-col items-center py-1 gap-1.5">

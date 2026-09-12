@@ -145,6 +145,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
 
   // Determine view based on current path
   const isOnAdminRoute = pathname.startsWith("/admin");
+  const isViewerRoute = pathname.startsWith("/user/dashboard/viewer");
 
   const hasInitializedThemeRef = useRef(false);
 
@@ -184,7 +185,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
         }
         
         // Restrict student dashboard access for admins without student privileges
-        if (!isOnAdminRoute && data.user.role === "admin" && data.user.isStudent === false) {
+        if (!isOnAdminRoute && !isViewerRoute && data.user.role === "admin" && data.user.isStudent === false) {
           router.replace("/admin");
         }
       } catch {
@@ -276,8 +277,12 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
           />
         )}
         <main
-          className={`flex-1 min-w-0 overflow-x-hidden p-4 md:p-6 lg:p-8 min-h-[calc(100vh-3.5rem)] ${
-            mobileNav === "bottom" ? "pb-20 md:pb-6 lg:pb-8" : ""
+          className={`flex-1 min-w-0 overflow-x-hidden ${
+            isViewerRoute
+              ? "p-0 h-[calc(100vh-3.5rem)] overflow-hidden"
+              : `p-4 md:p-6 lg:p-8 min-h-[calc(100vh-3.5rem)] ${
+                  mobileNav === "bottom" ? "pb-20 md:pb-6 lg:pb-8" : ""
+                }`
           } ${
             mobileNav === "left" ? "ml-14 md:ml-0" : ""
           }`}

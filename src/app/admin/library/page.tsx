@@ -163,8 +163,9 @@ export default function ManageLibraryPage() {
       const res = await fetch("/api/subjects");
       const data = await res.json();
       if (res.ok) setSubjects(data.subjects || []);
+      else toast.error(data.error || "Failed to load subjects");
     } catch {
-      // silent
+      toast.error("Network error fetching subjects");
     }
   };
 
@@ -173,8 +174,9 @@ export default function ManageLibraryPage() {
       const res = await fetch("/api/sections");
       const data = await res.json();
       if (res.ok) setSections(data.sections || []);
+      else toast.error(data.error || "Failed to load sections");
     } catch {
-      // silent
+      toast.error("Network error fetching sections");
     }
   };
 

@@ -11,6 +11,7 @@ import Note from "@/models/Note";
 import Assignment from "@/models/Assignment";
 import User from "@/models/User";
 import bcrypt from "bcryptjs";
+import mongoose from "mongoose";
 
 // DELETE /api/subjects/[id] — delete a subject (requires admin password + isAdminSubject or super admin)
 export async function DELETE(
@@ -60,16 +61,18 @@ export async function DELETE(
 
     const { id } = await params;
 
-    // Check if subject has notes or assignments
-    const [noteCount, assignmentCount] = await Promise.all([
+    // Check if subject has any associated materials
+    const [noteCount, assignmentCount, practicalCount, libraryCount] = await Promise.all([
       Note.countDocuments({ subject: id }),
       Assignment.countDocuments({ subject: id }),
+      mongoose.models.Practical ? mongoose.models.Practical.countDocuments({ subject: id }) : 0,
+      mongoose.models.LibraryResource ? mongoose.models.LibraryResource.countDocuments({ subject: id }) : 0,
     ]);
 
-    if (noteCount > 0 || assignmentCount > 0) {
+    if (noteCount > 0 || assignmentCount > 0 || practicalCount > 0 || libraryCount > 0) {
       return NextResponse.json(
         {
-          error: `Cannot delete: This subject has ${noteCount} note(s) and ${assignmentCount} assignment(s). Remove them first.`,
+          error: `Cannot delete: This subject has ${noteCount} note(s), ${assignmentCount} assignment(s), ${practicalCount} practical(s), and ${libraryCount} library resource(s). Remove them first.`,
         },
         { status: 400 }
       );
@@ -122,9 +125,27 @@ export async function PUT(
     await connectDB();
 
     const update: Record<string, string | number> = {};
-    if (name && name.trim()) update.name = name.trim();
-    if (type && ["theory", "practical"].includes(type)) update.type = type;
-    if (semester !== undefined && semester >= 1 && semester <= 8) update.semester = Number(semester);
+    if (name !== undefined) {
+      if (typeof name !== "string" || name.trim().length === 0) {
+        return NextResponse.json({ error: "Invalid name" }, { status: 400 });
+      }
+      update.name = name.trim();
+    }
+    
+    if (type !== undefined) {
+      if (!["theory", "practical"].includes(type)) {
+        return NextResponse.json({ error: "Type must be 'theory' or 'practical'" }, { status: 400 });
+      }
+      update.type = type;
+    }
+
+    if (semester !== undefined) {
+      const semNum = Number(semester);
+      if (isNaN(semNum) || semNum < 1 || semNum > 8) {
+        return NextResponse.json({ error: "Semester must be between 1 and 8" }, { status: 400 });
+      }
+      update.semester = semNum;
+    }
 
     if (Object.keys(update).length === 0) {
       return NextResponse.json({ error: "No valid fields to update" }, { status: 400 });

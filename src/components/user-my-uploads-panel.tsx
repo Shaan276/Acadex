@@ -487,74 +487,58 @@ export function UserMyUploadsPanel() {
           </CardContent>
         </Card>
       ) : (
-        <Card>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b">
-                  <th className="text-left p-3 font-medium">Title</th>
-                  <th className="text-left p-3 font-medium">Type</th>
-                  <th className="text-left p-3 font-medium">Request Type</th>
-                  <th className="text-left p-3 font-medium">Subject</th>
-                  <th className="text-left p-3 font-medium">Date</th>
-                  <th className="text-left p-3 font-medium">Status</th>
-                  <th className="text-left p-3 font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredRequests.map((upload) => (
-                  <tr
-                    key={upload._id}
-                    className="border-b hover:bg-muted/50 cursor-pointer transition-colors"
-                    onClick={() => {
-                      if (upload.file_url) window.open(upload.file_url, "_blank");
-                    }}
-                  >
-                    <td className="p-3">
-                      <div className="font-medium">{upload.title}</div>
-                      {upload.description && (
-                        <div className="text-xs text-muted-foreground line-clamp-1 mt-0.5">{upload.description}</div>
-                      )}
-                      {upload.status === "denied" && upload.admin_note && (
-                        <div className="text-xs text-red-500 mt-1">Admin note: {upload.admin_note}</div>
-                      )}
-                    </td>
-                    <td className="p-3">
+        <div className="space-y-3">
+          {filteredRequests.map((upload) => (
+            <Card
+              key={upload._id}
+              className="cursor-pointer hover:shadow-md transition-shadow"
+              onClick={() => {
+                if (upload.file_url) window.open(upload.file_url, "_blank");
+              }}
+            >
+              <CardContent className="p-4">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-semibold truncate">{upload.title}</h3>
                       <Badge variant="outline" className="text-xs">{typeLabel(upload.type)}</Badge>
-                    </td>
-                    <td className="p-3">
                       <Badge variant="outline" className="text-xs">{requestTypeLabel(upload)}</Badge>
-                    </td>
-                    <td className="p-3 text-muted-foreground">{upload.subject?.name || "—"}</td>
-                    <td className="p-3 text-xs text-muted-foreground whitespace-nowrap">
-                      {new Date(upload.createdAt).toLocaleDateString("en-IN", {
-                        day: "numeric",
-                        month: "short",
-                        year: "numeric",
-                      })}
-                    </td>
-                    <td className="p-3">
                       <Badge variant="outline" className={`text-xs ${statusColor(upload.status)}`}>
                         {upload.status.charAt(0).toUpperCase() + upload.status.slice(1)}
                       </Badge>
-                    </td>
-                    <td className="p-3">
-                      <div className="flex items-center gap-2" onClick={(event) => event.stopPropagation()}>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          onClick={() => handleDelete(upload._id)}
-                        >
-                          Remove
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+                    </div>
+                    {upload.description && (
+                      <p className="text-sm text-muted-foreground line-clamp-1 mt-1">{upload.description}</p>
+                    )}
+                    <div className="flex flex-wrap items-center gap-2 mt-2 text-xs text-muted-foreground">
+                      {upload.subject && <span>Subject: {upload.subject.name}</span>}
+                      <span>
+                        • Date:{" "}
+                        {new Date(upload.createdAt).toLocaleDateString("en-IN", {
+                          day: "numeric",
+                          month: "short",
+                          year: "numeric",
+                        })}
+                      </span>
+                    </div>
+                    {upload.status === "denied" && upload.admin_note && (
+                      <div className="text-xs text-red-500 mt-2">Admin note: {upload.admin_note}</div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0" onClick={(event) => event.stopPropagation()}>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => handleDelete(upload._id)}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
       )}
 
       <Card>

@@ -22,6 +22,14 @@ export async function POST(request: Request) {
       );
     }
 
+    // C-07: Whitelist the upload URL to prevent SSRF relay attacks
+    if (!uploadUrl.startsWith("https://www.googleapis.com/upload/drive/")) {
+      return NextResponse.json(
+        { error: "Invalid upload URL. Must be a Google Drive resumable upload URL." },
+        { status: 400 }
+      );
+    }
+
     const chunkArrayBuffer = await request.arrayBuffer();
     const chunkBuffer = Buffer.from(chunkArrayBuffer);
 
