@@ -2564,7 +2564,7 @@ ${val.stack}`;
       }
     }
     if (module_or_path === void 0) {
-      module_or_path = new URL("udoc_bg.wasm", "about:blank");
+      module_or_path = new URL("udoc_bg.wasm", (self.location?self.location.href:""));
     }
     const imports = __wbg_get_imports();
     if (typeof module_or_path === "string" || typeof Request === "function" && module_or_path instanceof Request || typeof URL === "function" && module_or_path instanceof URL) {

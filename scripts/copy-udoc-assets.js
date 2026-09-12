@@ -34,8 +34,11 @@ const destWorker = path.join(destDir, "worker.js");
 if (fs.existsSync(srcWasm) && fs.existsSync(srcWorker)) {
   fs.mkdirSync(destDir, { recursive: true });
   fs.copyFileSync(srcWasm, destWasm);
-  fs.copyFileSync(srcWorker, destWorker);
-  console.log("[copy-udoc-assets] Successfully copied udoc-viewer WASM and Worker assets to public/udoc/");
+  let workerSource = fs.readFileSync(srcWorker, "utf8");
+  // Replace invalid "about:blank" base URL fallback with self.location.href
+  workerSource = workerSource.replaceAll('"about:blank"', '(self.location?self.location.href:"")');
+  fs.writeFileSync(destWorker, workerSource, "utf8");
+  console.log("[copy-udoc-assets] Successfully copied and patched udoc-viewer WASM and Worker assets to public/udoc/");
 } else {
   console.warn("[copy-udoc-assets] @docmentis/udoc-viewer dist assets not found in node_modules.");
 }

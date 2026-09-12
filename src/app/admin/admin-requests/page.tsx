@@ -568,7 +568,7 @@ export default function AdminRequestsPage() {
                       <div className="col-span-2">
                         <span className="text-muted-foreground">Assigned Sections:</span>{" "}
                         <span className="font-medium">
-                          {detailRequest._assignedSectionsNames.map(name => `🏫 ${name}`).join(", ")}
+                          {detailRequest._assignedSectionsNames.join(", ")}
                         </span>
                       </div>
                     )}
@@ -653,7 +653,7 @@ export default function AdminRequestsPage() {
                           New Assigned Sections:
                         </span>{" "}
                         <span className="font-medium">
-                          {detailRequest._assignedSectionsNames.map(name => `🏫 ${name}`).join(", ")}
+                          {detailRequest._assignedSectionsNames.join(", ")}
                         </span>
                       </div>
                     )}

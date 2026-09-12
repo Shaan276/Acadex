@@ -714,7 +714,7 @@ export default function ManageLibraryPage() {
                   <div className="space-y-2">
                     <Label>Sections</Label>
                     <MultiSelect
-                      options={sections.map(s => ({ label: `🏫 ${s.name}`, value: s._id }))}
+                      options={sections.map(s => ({ label: s.name, value: s._id }))}
                       selected={addSections}
                       onChange={setAddSections}
                       placeholder="Select sections (optional)"
@@ -824,7 +824,7 @@ export default function ManageLibraryPage() {
                           <div className="flex gap-1 flex-wrap">
                             {r.sections.map(s => (
                               <Badge key={s._id} variant="outline" className="rounded-full text-xs">
-                                🏫 {s.name}
+                                {s.name}
                               </Badge>
                             ))}
                           </div>
@@ -833,7 +833,7 @@ export default function ManageLibraryPage() {
                             variant="outline"
                             className="rounded-full text-xs"
                           >
-                            🏫 {r.section.name}
+                            {r.section.name}
                           </Badge>
                         ) : (
                           <span className="text-xs text-muted-foreground">
@@ -996,7 +996,7 @@ export default function ManageLibraryPage() {
               <div className="space-y-2">
                 <Label>Sections</Label>
                 <MultiSelect
-                  options={sections.map(s => ({ label: `🏫 ${s.name}`, value: s._id }))}
+                  options={sections.map(s => ({ label: s.name, value: s._id }))}
                   selected={editSections}
                   onChange={setEditSections}
                   placeholder="No sections"

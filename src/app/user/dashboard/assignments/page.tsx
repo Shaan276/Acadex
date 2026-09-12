@@ -352,14 +352,14 @@ export default function AssignmentsPage() {
             </SelectTrigger>
             <SelectContent className="rounded-xl">
               <SelectItem value="my-section">
-                🏫 {userSectionName || "My Section"}
+                {userSectionName || "My Section"}
               </SelectItem>
               <SelectItem value="all">All Sections</SelectItem>
               {sections
                 .filter((s) => s._id !== userSectionId)
                 .map((s) => (
                   <SelectItem key={s._id} value={s._id}>
-                    🏫 {s.name}
+                    {s.name}
                   </SelectItem>
                 ))}
             </SelectContent>

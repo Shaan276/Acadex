@@ -583,7 +583,7 @@ export default function ManagePracticalsPage() {
                 .filter((s) => !userSectionId || s._id !== userSectionId)
                 .map((s) => (
                   <SelectItem key={s._id} value={s._id}>
-                    🏫 {s.name}
+                    {s.name}
                   </SelectItem>
                 ))}
             </SelectContent>
@@ -690,7 +690,7 @@ export default function ManagePracticalsPage() {
                   <div className="space-y-2">
                     <Label>Sections</Label>
                     <MultiSelect
-                      options={sections.map(s => ({ label: `🏫 ${s.name}`, value: s._id }))}
+                      options={sections.map(s => ({ label: s.name, value: s._id }))}
                       selected={addSections}
                       onChange={setAddSections}
                       placeholder="Select sections (optional)"
@@ -813,9 +813,6 @@ export default function ManagePracticalsPage() {
                           >
                             <TableCell className="font-medium max-w-[200px] truncate">
                               {p.title}
-                              {p.file_url && (
-                                <span className="ml-2 text-xs text-primary">📄</span>
-                              )}
                             </TableCell>
                             <TableCell>
                               {p.deadline ? (
@@ -835,13 +832,13 @@ export default function ManagePracticalsPage() {
                                 <div className="flex gap-1 flex-wrap">
                                   {p.sections.map(s => (
                                     <Badge key={s._id} variant="outline" className="rounded-full text-xs">
-                                      🏫 {s.name}
+                                      {s.name}
                                     </Badge>
                                   ))}
                                 </div>
                               ) : p.section ? (
                                 <Badge variant="outline" className="rounded-full text-xs">
-                                  🏫 {p.section.name}
+                                  {p.section.name}
                                 </Badge>
                               ) : (
                                 <span className="text-xs text-muted-foreground">—</span>
@@ -930,7 +927,7 @@ export default function ManagePracticalsPage() {
               <div className="space-y-2">
                 <Label>Sections</Label>
                 <MultiSelect
-                  options={sections.map(s => ({ label: `🏫 ${s.name}`, value: s._id }))}
+                  options={sections.map(s => ({ label: s.name, value: s._id }))}
                   selected={editSections}
                   onChange={setEditSections}
                   placeholder="No sections"

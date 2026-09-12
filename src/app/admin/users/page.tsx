@@ -778,7 +778,7 @@ export default function UsersPage() {
                   <div className="space-y-2">
                     <Label>Assigned Sections (Admin View)</Label>
                     <MultiSelect
-                      options={sections.map(s => ({ label: `🏫 ${s.name}`, value: s._id }))}
+                      options={sections.map(s => ({ label: s.name, value: s._id }))}
                       selected={addAssignedSections}
                       onChange={setAddAssignedSections}
                       placeholder="Select assigned sections"
@@ -1036,7 +1036,7 @@ export default function UsersPage() {
                       <TableCell>
                         {user.section ? (
                           <Badge variant="outline" className="rounded-full text-xs">
-                            🏫 {user.section.name}
+                            {user.section.name}
                           </Badge>
                         ) : (
                           <span className="text-xs text-muted-foreground">—</span>
@@ -1155,7 +1155,7 @@ export default function UsersPage() {
                 <div className="space-y-2">
                   <Label>Assigned Sections (Admin View)</Label>
                   <MultiSelect
-                    options={sections.map(s => ({ label: `🏫 ${s.name}`, value: s._id }))}
+                    options={sections.map(s => ({ label: s.name, value: s._id }))}
                     selected={selectedAssignedSections}
                     onChange={setSelectedAssignedSections}
                     placeholder="Select assigned sections"
@@ -1384,7 +1384,7 @@ export default function UsersPage() {
                 <div>
                   <p className="text-xs text-muted-foreground">Section</p>
                   <p className="text-sm font-medium">
-                    {detailUser.section ? `🏫 ${detailUser.section.name}` : "Not assigned"}
+                    {detailUser.section ? detailUser.section.name : "Not assigned"}
                   </p>
                 </div>
                 <div>

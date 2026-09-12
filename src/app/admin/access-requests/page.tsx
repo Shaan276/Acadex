@@ -610,7 +610,7 @@ export default function AccessRequestsPage() {
                             variant="outline"
                             className="rounded-full text-xs"
                           >
-                            🏫 {req.section.name}
+                            {req.section.name}
                           </Badge>
                         ) : (
                           <span className="text-xs text-muted-foreground">
@@ -723,7 +723,7 @@ export default function AccessRequestsPage() {
                   <p className="text-xs text-muted-foreground">Section</p>
                   <p className="text-sm font-medium">
                     {selectedRequest.section
-                      ? `🏫 ${selectedRequest.section.name}`
+                      ? selectedRequest.section.name
                       : "Not specified"}
                   </p>
                 </div>

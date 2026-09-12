@@ -260,7 +260,7 @@ export default function ManageSectionsPage() {
                     <TableRow key={section._id}>
                       <TableCell>
                         <Badge variant="outline" className="rounded-full text-sm">
-                          🏫 {section.name}
+                          {section.name}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">

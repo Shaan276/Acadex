@@ -51,6 +51,32 @@ const nextConfig: NextConfig = {
         ],
       },
       {
+        source: "/udoc/udoc_bg.wasm",
+        headers: [
+          {
+            key: "Content-Type",
+            value: "application/wasm",
+          },
+          {
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable",
+          },
+        ],
+      },
+      {
+        source: "/udoc/worker.js",
+        headers: [
+          {
+            key: "Content-Type",
+            value: "application/javascript; charset=utf-8",
+          },
+          {
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable",
+          },
+        ],
+      },
+      {
         source: "/udoc/(.*)",
         headers: [
           {

@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useTheme } from "next-themes";
-import { Loader2 } from "lucide-react";
+import { Loader2, FileWarning } from "lucide-react";
 import type { UDocClient as UDocClientType, UDocViewer } from "@docmentis/udoc-viewer";
 
 export interface UniversalDocumentViewerProps {
@@ -63,11 +63,13 @@ export function UniversalDocumentViewer({
     ? "dark"
     : "light";
 
-  // Keep references to latest callbacks without triggering re-renders
+  // Keep references to latest callbacks and state without triggering re-renders
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
   const onLoadSuccessRef = useRef(onLoadSuccess);
   onLoadSuccessRef.current = onLoadSuccess;
+  const activeThemeRef = useRef(activeTheme);
+  activeThemeRef.current = activeTheme;
 
   // Track initialization sequence ID to prevent race conditions when switching files quickly
   const loadSeqRef = useRef(0);
@@ -89,6 +91,10 @@ export function UniversalDocumentViewer({
       viewerRef.current = null;
     }
 
+    if (containerRef.current) {
+      containerRef.current.innerHTML = "";
+    }
+
     try {
       // Lazy load the WASM-based SDK so it does not bloat initial app bundle
       const { UDocClient } = await import("@docmentis/udoc-viewer");
@@ -99,8 +105,14 @@ export function UniversalDocumentViewer({
 
       // Reuse client if already created, or initialize new client
       if (!clientRef.current) {
+        const origin =
+          typeof window !== "undefined" && window.location.origin
+            ? window.location.origin
+            : "";
+        // baseUrl must be an absolute URL with trailing slash for assetUrl/new URL(file, baseUrl) to resolve properly
+        const baseUrl = origin ? `${origin}/udoc/` : "/udoc/";
         clientRef.current = await UDocClient.create({
-          baseUrl: "/udoc",
+          baseUrl,
           disableTelemetry: true,
           disableUpdateCheck: true,
         });
@@ -113,7 +125,7 @@ export function UniversalDocumentViewer({
       // Create viewer in container
       const viewer = await clientRef.current.createViewer({
         container: containerRef.current,
-        theme: activeTheme,
+        theme: activeThemeRef.current,
         // UI defaults: enable full navigation, thumbnails, search, zoom
         enablePerformanceCounter: false,
       });
@@ -159,7 +171,7 @@ export function UniversalDocumentViewer({
         onErrorRef.current?.(error);
       }
     }
-  }, [src, fileName, activeTheme]);
+  }, [src, fileName]);
 
   // Mount/remount viewer on src changes
   useEffect(() => {
@@ -210,6 +222,16 @@ export function UniversalDocumentViewer({
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-background/80 backdrop-blur-xs gap-3">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
           <p className="text-sm font-medium text-muted-foreground">Loading document viewer...</p>
+        </div>
+      )}
+
+      {initError && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-background/95 backdrop-blur-xs gap-3 p-6 text-center">
+          <div className="p-3 rounded-full bg-destructive/10 text-destructive">
+            <FileWarning className="h-6 w-6" />
+          </div>
+          <h3 className="font-semibold text-base">Unable to View Document</h3>
+          <p className="text-xs text-muted-foreground max-w-md">{initError}</p>
         </div>
       )}
 
