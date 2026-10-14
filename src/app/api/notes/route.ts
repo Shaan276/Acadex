@@ -9,12 +9,14 @@ import { connectDB } from "@/lib/db";
 import { addNoteSchema } from "@/lib/validations";
 import Note from "@/models/Note";
 import Section from "@/models/Section";
+import Subject from "@/models/Subject";
 import User from "@/models/User";
 import ActivityLog from "@/models/ActivityLog";
 import Notification from "@/models/Notification";
 import { noteUploadedPayload } from "@/lib/push/payloads";
 import { sendPushToUsers } from "@/lib/push/send";
 import { resolveStudentUserIdsForSubject } from "@/lib/push/targets";
+import { getAuthUser, requireAdmin, canAdminManageSection } from "@/lib/rbac";
 
 // GET /api/notes - List notes (optionally filter by subject and/or section)
 export async function GET(request: Request) {
@@ -110,13 +112,8 @@ export async function GET(request: Request) {
       }
     }
 
-    const assignedSectionsRaw = request.headers.get("x-user-assigned-sections");
-    const assignedSections = assignedSectionsRaw ? JSON.parse(assignedSectionsRaw) : [];
-    
-    // Build allowed sections array for the user
-    let allowedSections: string[] = [];
-    if (userSection) allowedSections.push(userSection);
-    allowedSections = Array.from(new Set([...allowedSections, ...assignedSections]));
+    const authUser = await getAuthUser(request);
+    const allowedSections: string[] = authUser ? authUser.effectiveSectionIds : [];
 
     // Section filtering logic:
     if (userRole === "admin" && !isSuperAdmin) {
@@ -132,6 +129,8 @@ export async function GET(request: Request) {
           { section: { $in: allowedSections } },
           { sections: { $in: allowedSections } }
         ];
+      } else {
+        return NextResponse.json({ notes: [] });
       }
     } else if (sectionParam && sectionParam !== "all") {
       filter.$or = [{ section: sectionParam }, { sections: sectionParam }];
@@ -178,15 +177,12 @@ export async function GET(request: Request) {
 // POST /api/notes - Add a note (admin only)
 export async function POST(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const adminId = request.headers.get("x-user-id");
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    const adminSection = request.headers.get("x-user-section");
-
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    const authResult = await requireAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
+    const { authUser } = authResult;
     const body = await request.json();
 
     const parsed = addNoteSchema.safeParse(body);
@@ -197,13 +193,41 @@ export async function POST(request: Request) {
       );
     }
 
-    // Determine section: super admin can choose any; section admin auto-fills their section
+    await connectDB();
+    void Section;
+
+    // Validate that the subject exists
+    const subjectExists = await Subject.findById(parsed.data.subject);
+    if (!subjectExists) {
+      return NextResponse.json(
+        { error: "Selected subject does not exist" },
+        { status: 400 }
+      );
+    }
+
+    // Determine section(s)
     let sectionId = parsed.data.section || null;
     let sectionsIds = parsed.data.sections || [];
-    if (!isSuperAdmin) {
-      if (adminSection && sectionsIds.length === 0 && !sectionId) {
-        sectionId = adminSection;
-        sectionsIds = [adminSection];
+
+    if (!authUser.isSuperAdmin) {
+      // If neither section nor sections provided, default to user's first assigned section
+      if (!sectionId && sectionsIds.length === 0) {
+        sectionId = authUser.section || authUser.effectiveSectionIds[0] || null;
+        if (sectionId) sectionsIds = [sectionId];
+      }
+
+      // Check all specified sections against admin's assigned sections
+      const allTargetSections = Array.from(
+        new Set([sectionId, ...sectionsIds].filter(Boolean))
+      ) as string[];
+
+      for (const sId of allTargetSections) {
+        if (!canAdminManageSection(authUser, sId)) {
+          return NextResponse.json(
+            { error: "You cannot add notes to a section you are not assigned to" },
+            { status: 403 }
+          );
+        }
       }
     } else {
       if (sectionId && sectionsIds.length === 0) {
@@ -211,8 +235,16 @@ export async function POST(request: Request) {
       }
     }
 
-    await connectDB();
-    void Section;
+    // Ensure valid section in Section collection if provided
+    if (sectionId) {
+      const secDoc = await Section.findById(sectionId);
+      if (!secDoc) {
+        return NextResponse.json(
+          { error: "Selected section does not exist" },
+          { status: 400 }
+        );
+      }
+    }
 
     const note = await Note.create({
       subject: parsed.data.subject,
@@ -220,7 +252,7 @@ export async function POST(request: Request) {
       file_url: parsed.data.file_url,
       section: sectionId, // Keep for backward compatibility
       sections: sectionsIds,
-      uploadedBy: adminId,
+      uploadedBy: authUser.userId,
     });
 
     const populated = await note.populate(["subject", "section"].map(f =>
@@ -229,7 +261,7 @@ export async function POST(request: Request) {
 
     // Log activity
     await ActivityLog.create({
-      user: adminId!,
+      user: authUser.userId,
       action: "NOTE_ADDED",
       details: `Added note: ${parsed.data.title}`,
       section: sectionId || null,

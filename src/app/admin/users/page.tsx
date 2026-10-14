@@ -394,7 +394,16 @@ export default function UsersPage() {
     setSelectedSection(user.section?._id || "none");
     setSelectedSemester(user.semester ? String(user.semester) : "none");
     setSelectedIsStudent(user.isStudent ?? true);
-    setSelectedAssignedSections(user.assignedSections?.map(s => s._id) || []);
+    const assignedIds = Array.isArray(user.assignedSections)
+      ? user.assignedSections
+          .map((s: unknown) =>
+            typeof s === "object" && s !== null && "_id" in s
+              ? String((s as { _id: unknown })._id)
+              : String(s)
+          )
+          .filter(Boolean)
+      : [];
+    setSelectedAssignedSections(assignedIds);
     setStreamDialogOpen(true);
   };
 
@@ -411,10 +420,14 @@ export default function UsersPage() {
           section: selectedSection === "none" ? null : selectedSection,
           semester: selectedSemester === "none" ? null : Number(selectedSemester),
           ...(currentIsSuperAdmin && { role: selectedRole }),
-          ...(selectedRole === "admin" && {
-            isStudent: selectedIsStudent,
-            assignedSections: selectedAssignedSections,
-          }),
+          ...(selectedRole === "admin"
+            ? {
+                isStudent: selectedIsStudent,
+                assignedSections: selectedAssignedSections,
+              }
+            : {
+                assignedSections: [],
+              }),
         }),
       });
 
@@ -1034,7 +1047,15 @@ export default function UsersPage() {
                         )}
                       </TableCell>
                       <TableCell>
-                        {user.section ? (
+                        {user.role === "admin" && user.assignedSections && user.assignedSections.length > 0 ? (
+                          <div className="flex flex-wrap gap-1 max-w-[160px]">
+                            {user.assignedSections.map((sec) => (
+                              <Badge key={sec._id} variant="secondary" className="rounded-full text-[10px] px-1.5 py-0">
+                                {sec.name}
+                              </Badge>
+                            ))}
+                          </div>
+                        ) : user.section ? (
                           <Badge variant="outline" className="rounded-full text-xs">
                             {user.section.name}
                           </Badge>
@@ -1387,6 +1408,18 @@ export default function UsersPage() {
                     {detailUser.section ? detailUser.section.name : "Not assigned"}
                   </p>
                 </div>
+                {detailUser.role === "admin" && detailUser.assignedSections && detailUser.assignedSections.length > 0 && (
+                  <div className="sm:col-span-2">
+                    <p className="text-xs text-muted-foreground mb-1">Assigned Sections (Admin Permissions)</p>
+                    <div className="flex flex-wrap gap-1">
+                      {detailUser.assignedSections.map((sec) => (
+                        <Badge key={sec._id} variant="secondary" className="text-xs">
+                          {sec.name}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div>
                   <p className="text-xs text-muted-foreground">Stream</p>
                   <p className="text-sm font-medium">

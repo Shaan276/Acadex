@@ -1,11 +1,12 @@
 /**
  * @module API/Admin/Students
  * @description Admin student management.
- * - GET  → lists students (section-scoped for sub-admins).
- * - POST → creates a new student account (validated with `addStudentSchema`).
+ * - GET  → lists students (scoped to assigned sections for sub-admins).
+ * - POST → creates a new student/admin account (validated with `addStudentSchema`).
  */
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
+import mongoose from "mongoose";
 import { connectDB } from "@/lib/db";
 import { addStudentSchema } from "@/lib/validations";
 import User from "@/models/User";
@@ -15,24 +16,23 @@ import ActivityLog from "@/models/ActivityLog";
 import AdminRequest from "@/models/AdminRequest";
 import Notification from "@/models/Notification";
 import { sendMail, approvalEmailHTML } from "@/lib/mail";
+import { getAuthUser, requireAdmin, canAdminManageSection } from "@/lib/rbac";
 
 // GET /api/admin/students - List all students
 export async function GET(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    const authResult = await requireAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    const adminSection = request.headers.get("x-user-section");
-
+    const { authUser } = authResult;
     await connectDB();
 
-    // Sub-admins can only see users from their own section
+    // Sub-admins can only see users from their assigned sections
     const filter: Record<string, unknown> = {};
-    if (!isSuperAdmin && adminSection) {
-      filter.section = adminSection;
+    if (!authUser.isSuperAdmin) {
+      filter.section = { $in: authUser.effectiveSectionIds };
     }
 
     // Fetch users first, then manually attach stream/section data
@@ -56,13 +56,20 @@ export async function GET(request: Request) {
         ...users
           .map((u) => u.section?.toString())
           .filter((id): id is string => !!id),
-        ...users
-          .flatMap((u) => (u as any).assignedSections?.map((s: any) => s.toString()) || [])
+        ...users.flatMap((u) =>
+          Array.isArray(u.assignedSections)
+            ? u.assignedSections.map((s: unknown) =>
+                typeof s === "object" && s !== null && "_id" in s
+                  ? String((s as { _id: unknown })._id)
+                  : String(s)
+              )
+            : []
+        ),
       ]),
     ];
 
     // Fetch streams in one query if any exist
-    let streamMap: Record<string, { _id: string; name: string }> = {};
+    const streamMap: Record<string, { _id: string; name: string }> = {};
     if (streamIds.length > 0) {
       const streams = await Stream.find({ _id: { $in: streamIds } })
         .select("_id name")
@@ -73,7 +80,7 @@ export async function GET(request: Request) {
     }
 
     // Fetch sections in one query if any exist
-    let sectionMap: Record<string, { _id: string; name: string }> = {};
+    const sectionMap: Record<string, { _id: string; name: string }> = {};
     if (sectionIds.length > 0) {
       const sections = await Section.find({ _id: { $in: sectionIds } })
         .select("_id name")
@@ -84,12 +91,27 @@ export async function GET(request: Request) {
     }
 
     // Attach stream and section objects to each user
-    const students = users.map((u: any) => ({
-      ...u,
-      stream: u.stream ? streamMap[u.stream.toString()] || null : null,
-      section: u.section ? sectionMap[u.section.toString()] || null : null,
-      assignedSections: u.assignedSections?.map((id: any) => sectionMap[id.toString()]).filter(Boolean) || [],
-    }));
+    const students = users.map((u) => {
+      const assignedSecObjs = Array.isArray(u.assignedSections)
+        ? u.assignedSections
+            .map((id: unknown) => {
+              const strId =
+                typeof id === "object" && id !== null && "_id" in id
+                  ? String((id as { _id: unknown })._id)
+                  : String(id);
+              return sectionMap[strId] || null;
+            })
+            .filter((item): item is { _id: string; name: string } => item !== null)
+        : [];
+
+      return {
+        ...u,
+        _id: u._id.toString(),
+        stream: u.stream ? streamMap[u.stream.toString()] || null : null,
+        section: u.section ? sectionMap[u.section.toString()] || null : null,
+        assignedSections: assignedSecObjs,
+      };
+    });
 
     return NextResponse.json({ students });
   } catch (error) {
@@ -101,19 +123,17 @@ export async function GET(request: Request) {
   }
 }
 
-// POST /api/admin/students - Add a new student
+// POST /api/admin/students - Add a new student / admin
 export async function POST(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const adminId = request.headers.get("x-user-id");
-
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    const authResult = await requireAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
+    const { authUser } = authResult;
     const body = await request.json();
 
-    // Validate input
     const parsed = addStudentSchema.safeParse(body);
     if (!parsed.success) {
       return NextResponse.json(
@@ -123,27 +143,25 @@ export async function POST(request: Request) {
     }
 
     const { name, college_id, email, password, role, semester } = parsed.data;
-    const stream = body.stream || null;
-    let section = body.section || null;
-    const normalizedEmail = email ? email.trim().toLowerCase() : null;
-
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    const adminSection = request.headers.get("x-user-section");
 
     await connectDB();
 
-    // Check if college_id already exists
-    const existingUser = await User.findOne({ college_id });
-    if (existingUser) {
+    // Check college_id uniqueness
+    const existing = await User.findOne({
+      college_id: { $regex: new RegExp(`^${college_id.trim()}$`, "i") },
+    });
+    if (existing) {
       return NextResponse.json(
-        { error: "A user with this college ID already exists" },
+        { error: "A user with this College ID already exists" },
         { status: 409 }
       );
     }
 
+    // Check email uniqueness if email provided
+    const normalizedEmail = email?.trim().toLowerCase() || null;
     if (normalizedEmail) {
-      const existingEmailUser = await User.findOne({ email: normalizedEmail });
-      if (existingEmailUser) {
+      const existingEmail = await User.findOne({ email: normalizedEmail });
+      if (existingEmail) {
         return NextResponse.json(
           { error: "A user with this email already exists" },
           { status: 409 }
@@ -151,13 +169,79 @@ export async function POST(request: Request) {
       }
     }
 
-    // Sub-admin creating an admin → send approval request to super admin
-    if (role === "admin" && !isSuperAdmin) {
+    // Resolve stream and section from body
+    const stream = body.stream || null;
+    const section = body.section || null;
+
+    // Validate stream exists if supplied
+    if (stream) {
+      const streamExists = await Stream.findById(stream);
+      if (!streamExists) {
+        return NextResponse.json(
+          { error: "Selected stream does not exist" },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Validate section exists if supplied
+    if (section) {
+      const sectionExists = await Section.findById(section);
+      if (!sectionExists) {
+        return NextResponse.json(
+          { error: "Selected section does not exist" },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Sub-admins can only create students in their own assigned sections
+    if (!authUser.isSuperAdmin) {
+      if (!canAdminManageSection(authUser, section)) {
+        return NextResponse.json(
+          { error: "You can only add students to your assigned sections" },
+          { status: 403 }
+        );
+      }
+    }
+
+    // Validate assigned sections if provided
+    let validAssignedSectionIds: mongoose.Types.ObjectId[] = [];
+    if (parsed.data.assignedSections && parsed.data.assignedSections.length > 0) {
+      const rawIds = Array.from(
+        new Set(
+          parsed.data.assignedSections
+            .map(String)
+            .map((s) => s.trim())
+            .filter(Boolean)
+        )
+      );
+      const invalid = rawIds.filter((id) => !mongoose.Types.ObjectId.isValid(id));
+      if (invalid.length > 0) {
+        return NextResponse.json(
+          { error: "Invalid section ID in assignedSections" },
+          { status: 400 }
+        );
+      }
+      const existingSecs = await Section.find({ _id: { $in: rawIds } })
+        .select("_id")
+        .lean();
+      if (existingSecs.length !== rawIds.length) {
+        return NextResponse.json(
+          { error: "One or more assigned sections do not exist" },
+          { status: 400 }
+        );
+      }
+      validAssignedSectionIds = rawIds.map((id) => new mongoose.Types.ObjectId(id));
+    }
+
+    // If sub-admin is attempting to create an admin, create an AdminRequest for approval
+    if (role === "admin" && !authUser.isSuperAdmin) {
       const passwordHash = await bcrypt.hash(password, 10);
 
       await AdminRequest.create({
         type: "create_admin",
-        requestedBy: adminId!,
+        requestedBy: authUser.userId,
         data: {
           name,
           college_id,
@@ -167,7 +251,7 @@ export async function POST(request: Request) {
           section,
           semester: semester || null,
           ...(parsed.data.isStudent !== undefined && { isStudent: parsed.data.isStudent }),
-          ...(parsed.data.assignedSections && parsed.data.assignedSections.length > 0 && { assignedSections: parsed.data.assignedSections }),
+          ...(validAssignedSectionIds.length > 0 && { assignedSections: validAssignedSectionIds.map(String) }),
         },
       });
 
@@ -177,14 +261,14 @@ export async function POST(request: Request) {
         await Notification.create({
           type: "new_access_request",
           title: "Admin Creation Request",
-          message: `${request.headers.get("x-user-name") || "An admin"} requested to create admin: ${name} (${college_id})`,
+          message: `${authUser.name} requested to create admin: ${name} (${college_id})`,
           link: "/admin/admin-requests",
           targetUsers: superAdmins.map((sa) => sa._id),
         });
       }
 
       await ActivityLog.create({
-        user: adminId!,
+        user: authUser.userId,
         action: "ADMIN_REQUEST_CREATED",
         details: `Requested admin creation: ${name} (${college_id})`,
         section: section || null,
@@ -215,12 +299,14 @@ export async function POST(request: Request) {
       semester: semester || null,
       must_change_password: true,
       ...(parsed.data.isStudent !== undefined && { isStudent: parsed.data.isStudent }),
-      ...(parsed.data.assignedSections && parsed.data.assignedSections.length > 0 && { assignedSections: parsed.data.assignedSections }),
+      ...(role === "admin" && validAssignedSectionIds.length > 0 && {
+        assignedSections: validAssignedSectionIds,
+      }),
     });
 
     // Log activity
     await ActivityLog.create({
-      user: adminId!,
+      user: authUser.userId,
       action: "STUDENT_ADDED",
       details: `Added ${role}: ${name} (${college_id})`,
       section: section || null,
@@ -235,29 +321,27 @@ export async function POST(request: Request) {
           html: approvalEmailHTML(name, college_id, password),
         });
         emailSent = true;
-      } catch (emailError) {
-        console.error("Failed to send new-user credentials email:", emailError);
-        // User creation should still succeed even if email delivery fails.
+      } catch (mailErr) {
+        console.error("Failed to send welcome email:", mailErr);
       }
     }
 
     return NextResponse.json(
       {
         success: true,
-        emailSent,
-        student: {
+        user: {
           id: user._id,
           name: user.name,
           college_id: user.college_id,
+          email: user.email,
           role: user.role,
-          must_change_password: user.must_change_password,
-          createdAt: user.createdAt,
         },
+        emailSent,
       },
       { status: 201 }
     );
   } catch (error) {
-    console.error("Add student error:", error);
+    console.error("Create student error:", error);
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }

@@ -1,36 +1,36 @@
 /**
  * @module API/Subjects
  * @description Subject management.
- * - GET  → lists subjects (super admin: all; others: user's stream + semester).
- * - POST → creates a new subject (admin with `isAdminSubject` or super admin).
+ * - GET  → lists subjects based on user role and enrollment.
+ * - POST → creates a new subject (super admin only).
  */
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
 import Subject from "@/models/Subject";
+import StreamModel from "@/models/Stream";
+import User from "@/models/User";
+import { requireSuperAdmin } from "@/lib/rbac";
 
-// GET /api/subjects - List all subjects
+// GET /api/subjects - List subjects based on user role and enrollment
 export async function GET(request: Request) {
   try {
-    await connectDB();
-
     const userId = request.headers.get("x-user-id");
 
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const UserModel = (await import("@/models/User")).default;
-    const StreamModel = (await import("@/models/Stream")).default;
+    await connectDB();
 
-    const user = await UserModel.findById(userId).select(
-      "role stream isSuperAdmin semester"
-    );
+    const user = await User.findById(userId)
+      .select("role isSuperAdmin stream semester")
+      .lean();
 
     if (!user) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    // 👑 Super Admin → return all subjects
+    // Super Admin → return all subjects
     if (user.isSuperAdmin) {
       const subjects = await Subject.find().sort({ semester: 1, name: 1 }).lean();
       return NextResponse.json({ subjects });
@@ -59,7 +59,6 @@ export async function GET(request: Request) {
     const subjects = await Subject.find(filter).sort({ semester: 1, name: 1 }).lean();
 
     return NextResponse.json({ subjects });
-
   } catch (error) {
     console.error("List subjects error:", error);
     return NextResponse.json(
@@ -69,28 +68,16 @@ export async function GET(request: Request) {
   }
 }
 
-// POST /api/subjects - Create a new subject (admin with isAdminSubject or super admin)
+// POST /api/subjects - Create a new subject (super admin only)
 export async function POST(request: Request) {
   try {
-    const role = request.headers.get("x-user-role");
-    if (role !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    if (!isSuperAdmin) {
-      const userId = request.headers.get("x-user-id");
-      const { connectDB: connect } = await import("@/lib/db");
-      const UserModel = (await import("@/models/User")).default;
-      await connect();
-      const admin = await UserModel.findById(userId).select("isAdminSubject").lean();
-      if (!admin?.isAdminSubject) {
-        return NextResponse.json({ error: "You don't have permission to manage subjects" }, { status: 403 });
-      }
+    const authResult = await requireSuperAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
     const body = await request.json();
-    const { name, type, semester } = body;
+    const { name, type, semester, streamId } = body;
 
     if (!name || !name.trim()) {
       return NextResponse.json(
@@ -108,7 +95,27 @@ export async function POST(request: Request) {
 
     await connectDB();
 
-    // Check for duplicate (same name + same semester)
+    // Check for duplicate within stream if streamId is provided
+    if (streamId) {
+      const targetStream = await StreamModel.findById(streamId).populate("subjects");
+      if (!targetStream) {
+        return NextResponse.json(
+          { error: "Selected stream does not exist" },
+          { status: 400 }
+        );
+      }
+      const existingInStream = (targetStream.subjects as unknown as { name: string }[]).some(
+        (s) => s.name.toLowerCase() === name.trim().toLowerCase()
+      );
+      if (existingInStream) {
+        return NextResponse.json(
+          { error: "A subject with this name already exists in the selected stream" },
+          { status: 409 }
+        );
+      }
+    }
+
+    // Check for duplicate across same name + same semester
     const existing = await Subject.findOne({
       name: { $regex: new RegExp(`^${name.trim()}$`, "i") },
       semester: Number(semester),
@@ -125,6 +132,12 @@ export async function POST(request: Request) {
       type: type === "practical" ? "practical" : "theory",
       semester: Number(semester),
     });
+
+    if (streamId) {
+      await StreamModel.findByIdAndUpdate(streamId, {
+        $addToSet: { subjects: subject._id },
+      });
+    }
 
     return NextResponse.json({ subject }, { status: 201 });
   } catch (error) {

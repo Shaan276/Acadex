@@ -63,15 +63,7 @@ function toEmbedUrl(url: string): string {
   return url;
 }
 
-/** Read identity from middleware-injected headers */
-function getIdentity(headers: Headers) {
-  return {
-    userId: headers.get("x-user-id") || "",
-    role: headers.get("x-user-role") as "admin" | "student",
-    isSuperAdmin: headers.get("x-user-is-super-admin") === "true",
-    userSection: headers.get("x-user-section") || null,
-  };
-}
+import { getAuthUser, requireAdmin, canAdminManageSection } from "@/lib/rbac";
 
 /* ================================================================== *
  *  GET  — list requests  (+ student's own live resources)            *
@@ -80,10 +72,8 @@ export async function GET(req: NextRequest) {
   try {
     await connectDB();
 
-    const { userId, role, isSuperAdmin, userSection } = getIdentity(
-      req.headers
-    );
-    if (!userId) {
+    const authUser = await getAuthUser(req);
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -96,14 +86,16 @@ export async function GET(req: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const query: Record<string, any> = {};
 
-    if (role === "admin") {
-      // Sub-admins see only their section; super-admins see everything
-      if (!isSuperAdmin && userSection) {
-        query.section = userSection;
+    if (authUser.role === "admin") {
+      // Sub-admins see only their assigned sections; super-admins see everything
+      if (!authUser.isSuperAdmin) {
+        query.section = {
+          $in: authUser.effectiveSectionIds.map((id) => new mongoose.Types.ObjectId(id)),
+        };
       }
     } else {
       // Students only see their own requests
-      query.uploadedBy = userId;
+      query.uploadedBy = authUser.userId;
     }
 
     if (actionFilter && validateAction(actionFilter)) {
@@ -131,15 +123,15 @@ export async function GET(req: NextRequest) {
     /* ---------- student's own live resources ---------- */
     let yourResources: Record<string, unknown>[] = [];
 
-    if (role === "student") {
+    if (authUser.role === "student") {
       const [notes, assignments, practicals] = await Promise.all([
-        Note.find({ uploadedBy: userId })
+        Note.find({ uploadedBy: authUser.userId })
           .populate("subject", "name semester")
           .lean(),
-        Assignment.find({ uploadedBy: userId })
+        Assignment.find({ uploadedBy: authUser.userId })
           .populate("subject", "name semester")
           .lean(),
-        Practical.find({ uploadedBy: userId })
+        Practical.find({ uploadedBy: authUser.userId })
           .populate("subject", "name semester")
           .lean(),
       ]);
@@ -183,10 +175,8 @@ export async function POST(req: NextRequest) {
   try {
     await connectDB();
 
-    const { userId, role, isSuperAdmin, userSection } = getIdentity(
-      req.headers
-    );
-    if (!userId) {
+    const authUser = await getAuthUser(req);
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -253,15 +243,31 @@ export async function POST(req: NextRequest) {
     }
 
     /* ---------- determine section ---------- */
-    const section =
-      role === "admin" && isSuperAdmin
-        ? sectionRaw || null
-        : userSection || null;
+    let section: string | null = null;
+    if (authUser.role === "admin") {
+      if (authUser.isSuperAdmin) {
+        section = sectionRaw || null;
+      } else {
+        if (sectionRaw) {
+          if (!canAdminManageSection(authUser, sectionRaw)) {
+            return NextResponse.json(
+              { error: "Cannot create resource in an unassigned section" },
+              { status: 403 }
+            );
+          }
+          section = sectionRaw;
+        } else {
+          section = authUser.effectiveSectionIds[0] || null;
+        }
+      }
+    } else {
+      section = authUser.section || null;
+    }
 
     /* ============================================================== *
      *  ADMIN  — direct-create (bypass the request queue)             *
      * ============================================================== */
-    if (role === "admin") {
+    if (authUser.role === "admin") {
       const Model = getResourceModel(resourceType);
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -269,7 +275,7 @@ export async function POST(req: NextRequest) {
         title: title.trim(),
         subject,
         section,
-        uploadedBy: userId,
+        uploadedBy: authUser.userId,
         file_url: file_url.trim(),
       };
       if (description) docData.description = description;
@@ -282,7 +288,7 @@ export async function POST(req: NextRequest) {
       // Log activity
       const actionLabel = resourceType.toUpperCase() + "_ADDED";
       await ActivityLog.create({
-        user: userId,
+        user: authUser.userId,
         action: actionLabel,
         details: `Admin added ${resourceType}: "${title.trim()}"`,
         section,
@@ -327,7 +333,7 @@ export async function POST(req: NextRequest) {
       const ownerId = String(
         (targetResource as Record<string, unknown>).uploadedBy ?? ""
       );
-      if (ownerId !== userId) {
+      if (ownerId !== authUser.userId) {
         return NextResponse.json(
           { error: "You can only request changes to your own resources" },
           { status: 403 }
@@ -351,7 +357,7 @@ export async function POST(req: NextRequest) {
 
       // Duplicate-pending check
       const existingPending = await UserRequest.findOne({
-        uploadedBy: userId,
+        uploadedBy: authUser.userId,
         action,
         resourceId,
         status: "pending",
@@ -369,7 +375,7 @@ export async function POST(req: NextRequest) {
     // For add: duplicate-pending check (same title + subject)
     if (action === "add") {
       const existingPending = await UserRequest.findOne({
-        uploadedBy: userId,
+        uploadedBy: authUser.userId,
         action: "add",
         title: title.trim(),
         subject,
@@ -393,7 +399,7 @@ export async function POST(req: NextRequest) {
       file_url: file_url.trim(),
       subject,
       section,
-      uploadedBy: userId,
+      uploadedBy: authUser.userId,
       deadline:
         resourceType === "assignment" && deadline
           ? new Date(deadline)
@@ -404,25 +410,14 @@ export async function POST(req: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const adminQuery: Record<string, any> = { role: "admin", status: "active" };
     if (section) {
-      // Section-scoped admins + all super-admins
-      const admins = await User.find({
-        role: "admin",
-        status: "active",
-        $or: [{ section }, { isSuperAdmin: true }],
-      }).select("_id");
-      adminQuery._id = { $in: admins.map((a) => a._id) };
+      adminQuery.$or = [
+        { isSuperAdmin: true },
+        { section },
+        { assignedSections: section },
+      ];
     }
-    const adminIds = section
-      ? (
-          await User.find({
-            role: "admin",
-            status: "active",
-            $or: [{ section }, { isSuperAdmin: true }],
-          }).select("_id")
-        ).map((a) => a._id)
-      : (
-          await User.find({ role: "admin", status: "active" }).select("_id")
-        ).map((a) => a._id);
+    const admins = await User.find(adminQuery).select("_id");
+    const adminIds = admins.map((a) => a._id);
 
     if (adminIds.length > 0) {
       const actionLabels: Record<string, string> = {
@@ -459,10 +454,9 @@ export async function PATCH(req: NextRequest) {
   try {
     await connectDB();
 
-    const { userId, role } = getIdentity(req.headers);
-    if (!userId || role !== "admin") {
-      return NextResponse.json({ error: "Admin only" }, { status: 403 });
-    }
+    const authResult = await requireAdmin(req);
+    if (authResult.response) return authResult.response;
+    const { authUser } = authResult;
 
     const body = await req.json();
     const {
@@ -482,7 +476,7 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    // M-13: Atomically lock the request to prevent double-approval duplicates
+    // Atomically lock the request to prevent double-approval duplicates
     const request = await UserRequest.findOneAndUpdate(
       { _id: requestId, status: "pending" },
       { status: "processing" },
@@ -503,13 +497,12 @@ export async function PATCH(req: NextRequest) {
       );
     }
     
-    // H-05: Sub-admins can only approve/deny requests belonging to their section
-    const { isSuperAdmin, userSection } = getIdentity(req.headers);
-    if (!isSuperAdmin && userSection && request.section && request.section.toString() !== userSection) {
+    // Sub-admins can only approve/deny requests belonging to their assigned section(s)
+    if (!canAdminManageSection(authUser, request.section?.toString())) {
       // Rollback the processing lock
       await UserRequest.findByIdAndUpdate(requestId, { status: "pending" });
       return NextResponse.json(
-        { error: "You can only review requests for your own section" },
+        { error: "You can only review requests for your assigned section(s)" },
         { status: 403 }
       );
     }
@@ -596,12 +589,12 @@ export async function PATCH(req: NextRequest) {
       // Mark as approved
       request.status = "approved";
       request.reviewNote = (reviewNote ?? "").trim();
-      request.reviewedBy = new mongoose.Types.ObjectId(userId);
+      request.reviewedBy = new mongoose.Types.ObjectId(authUser.userId);
       await request.save();
 
       // Activity log
       await ActivityLog.create({
-        user: userId,
+        user: authUser.userId,
         action: "USER_REQUEST_APPROVED",
         details: `Approved ${action} request for ${resourceType}: "${request.title}"`,
         section: request.section,
@@ -629,11 +622,11 @@ export async function PATCH(req: NextRequest) {
     /* ---------- DENY ---------- */
     request.status = "denied";
     request.reviewNote = (reviewNote ?? "").trim();
-    request.reviewedBy = new mongoose.Types.ObjectId(userId);
+    request.reviewedBy = new mongoose.Types.ObjectId(authUser.userId);
     await request.save();
 
     await ActivityLog.create({
-      user: userId,
+      user: authUser.userId,
       action: "USER_REQUEST_DENIED",
       details: `Denied ${action} request for ${resourceType}: "${request.title}"`,
       section: request.section,
@@ -666,8 +659,8 @@ export async function DELETE(req: NextRequest) {
   try {
     await connectDB();
 
-    const { userId, role } = getIdentity(req.headers);
-    if (!userId) {
+    const authUser = await getAuthUser(req);
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -677,14 +670,14 @@ export async function DELETE(req: NextRequest) {
 
     /* ---------- bulk clear (students only) ---------- */
     if (mode && !id) {
-      if (role !== "student") {
+      if (authUser.role !== "student") {
         return NextResponse.json(
           { error: "Bulk clear is for students only" },
           { status: 403 }
         );
       }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const filter: Record<string, any> = { uploadedBy: userId };
+      const filter: Record<string, any> = { uploadedBy: authUser.userId };
       if (mode === "approved") filter.status = "approved";
       else if (mode === "denied") filter.status = "denied";
       // "all" = no extra status filter
@@ -713,8 +706,16 @@ export async function DELETE(req: NextRequest) {
     }
 
     // Students can only delete their own requests
-    if (role === "student" && String(request.uploadedBy) !== userId) {
+    if (authUser.role === "student" && String(request.uploadedBy) !== authUser.userId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    // Admins can only delete requests in their assigned sections
+    if (authUser.role === "admin" && !canAdminManageSection(authUser, request.section?.toString())) {
+      return NextResponse.json(
+        { error: "You can only delete requests for your assigned section(s)" },
+        { status: 403 }
+      );
     }
 
     await UserRequest.findByIdAndDelete(id);

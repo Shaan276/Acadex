@@ -1,44 +1,37 @@
 /**
  * @module API/Subjects/[id]
  * @description Single subject operations.
- * - PUT   → updates subject fields (admin with `isAdminSubject` or super admin).
- * - DELETE → removes the subject (requires admin password confirmation).
+ * - PUT    → updates subject fields (super admin only).
+ * - DELETE → removes the subject (super admin only, requires admin password confirmation).
  */
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
 import Subject from "@/models/Subject";
+import Stream from "@/models/Stream";
 import Note from "@/models/Note";
 import Assignment from "@/models/Assignment";
 import User from "@/models/User";
 import bcrypt from "bcryptjs";
 import mongoose from "mongoose";
+import { requireSuperAdmin } from "@/lib/rbac";
 
-// DELETE /api/subjects/[id] — delete a subject (requires admin password + isAdminSubject or super admin)
+// DELETE /api/subjects/[id] — delete a subject (super admin only + password confirmation)
 export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const role = request.headers.get("x-user-role");
-    if (role !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    const authResult = await requireSuperAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
     const userId = request.headers.get("x-user-id");
-    if (!userId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     await connectDB();
 
     const admin = await User.findById(userId);
     if (!admin) {
       return NextResponse.json({ error: "Admin not found" }, { status: 404 });
-    }
-
-    if (!isSuperAdmin && !admin.isAdminSubject) {
-      return NextResponse.json({ error: "You don't have permission to manage subjects" }, { status: 403 });
     }
 
     const body = await request.json();
@@ -86,6 +79,12 @@ export async function DELETE(
       );
     }
 
+    // Clean up reference in any streams
+    await Stream.updateMany(
+      { subjects: id },
+      { $pull: { subjects: id } }
+    );
+
     return NextResponse.json({ success: true, message: "Subject deleted" });
   } catch (error) {
     console.error("Delete subject error:", error);
@@ -96,30 +95,19 @@ export async function DELETE(
   }
 }
 
-// PUT /api/subjects/[id] — update a subject (admin with isAdminSubject or super admin)
+// PUT /api/subjects/[id] — update a subject (super admin only)
 export async function PUT(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const role = request.headers.get("x-user-role");
-    if (role !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    if (!isSuperAdmin) {
-      const userId = request.headers.get("x-user-id");
-      await connectDB();
-      const admin = await User.findById(userId).select("isAdminSubject").lean();
-      if (!admin?.isAdminSubject) {
-        return NextResponse.json({ error: "You don't have permission to manage subjects" }, { status: 403 });
-      }
+    const authResult = await requireSuperAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
     const body = await request.json();
-    const { name, type, semester } = body;
-
+    const { name, type, semester, streamId } = body;
     const { id } = await params;
 
     await connectDB();
@@ -131,7 +119,7 @@ export async function PUT(
       }
       update.name = name.trim();
     }
-    
+
     if (type !== undefined) {
       if (!["theory", "practical"].includes(type)) {
         return NextResponse.json({ error: "Type must be 'theory' or 'practical'" }, { status: 400 });
@@ -147,13 +135,49 @@ export async function PUT(
       update.semester = semNum;
     }
 
-    if (Object.keys(update).length === 0) {
+    if (Object.keys(update).length === 0 && !streamId) {
       return NextResponse.json({ error: "No valid fields to update" }, { status: 400 });
     }
 
-    const subject = await Subject.findByIdAndUpdate(id, { $set: update }, { new: true });
+    // If name or semester is changing, check duplicate
+    if (update.name || update.semester) {
+      const currentSubject = await Subject.findById(id);
+      if (!currentSubject) {
+        return NextResponse.json({ error: "Subject not found" }, { status: 404 });
+      }
+      const checkName = (update.name as string) || currentSubject.name;
+      const checkSem = (update.semester as number) || currentSubject.semester;
+      const dup = await Subject.findOne({
+        _id: { $ne: id },
+        name: { $regex: new RegExp(`^${checkName}$`, "i") },
+        semester: checkSem,
+      });
+      if (dup) {
+        return NextResponse.json(
+          { error: "A subject with this name already exists for this semester" },
+          { status: 409 }
+        );
+      }
+    }
+
+    let subject = null;
+    if (Object.keys(update).length > 0) {
+      subject = await Subject.findByIdAndUpdate(id, { $set: update }, { new: true });
+    } else {
+      subject = await Subject.findById(id);
+    }
+
     if (!subject) {
       return NextResponse.json({ error: "Subject not found" }, { status: 404 });
+    }
+
+    if (streamId) {
+      const targetStream = await Stream.findById(streamId);
+      if (targetStream) {
+        await Stream.findByIdAndUpdate(streamId, {
+          $addToSet: { subjects: subject._id },
+        });
+      }
     }
 
     return NextResponse.json({ subject });

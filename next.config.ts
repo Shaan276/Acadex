@@ -3,7 +3,19 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   compress: true,
 
-  turbopack: {},
+  turbopack: {
+    resolveAlias: {
+      canvas: "./src/lib/empty-module.ts",
+    },
+  },
+
+  webpack: (config) => {
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      canvas: false,
+    };
+    return config;
+  },
 
   images: {
     formats: ["image/avif", "image/webp"],
@@ -51,34 +63,12 @@ const nextConfig: NextConfig = {
         ],
       },
       {
-        source: "/udoc/udoc_bg.wasm",
-        headers: [
-          {
-            key: "Content-Type",
-            value: "application/wasm",
-          },
-          {
-            key: "Cache-Control",
-            value: "public, max-age=31536000, immutable",
-          },
-        ],
-      },
-      {
-        source: "/udoc/worker.js",
+        source: "/pdf.worker.min.js",
         headers: [
           {
             key: "Content-Type",
             value: "application/javascript; charset=utf-8",
           },
-          {
-            key: "Cache-Control",
-            value: "public, max-age=31536000, immutable",
-          },
-        ],
-      },
-      {
-        source: "/udoc/(.*)",
-        headers: [
           {
             key: "Cache-Control",
             value: "public, max-age=31536000, immutable",

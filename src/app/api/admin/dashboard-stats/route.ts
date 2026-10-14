@@ -8,23 +8,24 @@ import { connectDB } from "@/lib/db";
 import AccessRequest from "@/models/AccessRequest";
 import ContactMessage from "@/models/ContactMessage";
 
+import mongoose from "mongoose";
+import { requireAdmin } from "@/lib/rbac";
+
 // GET /api/admin/dashboard-stats — Quick counts for admin dashboard widgets
 export async function GET(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    const userSection = request.headers.get("x-user-section");
+    const authResult = await requireAdmin(request);
+    if (authResult.response) return authResult.response;
+    const { authUser } = authResult;
 
     await connectDB();
 
-    // Sub-admins only see pending requests for their own section
+    // Sub-admins only see pending requests for their assigned sections
     const pendingFilter: Record<string, unknown> = { status: "pending" };
-    if (!isSuperAdmin && userSection) {
-      pendingFilter.section = userSection;
+    if (!authUser.isSuperAdmin) {
+      pendingFilter.section = {
+        $in: authUser.effectiveSectionIds.map((id) => new mongoose.Types.ObjectId(id)),
+      };
     }
 
     const [pendingRequests, unreadMessages] = await Promise.all([

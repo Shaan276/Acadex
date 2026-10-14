@@ -18,6 +18,9 @@ import { sendMail, approvalEmailHTML, denialEmailHTML } from "@/lib/mail";
 import { sendPushToUsers } from "@/lib/push/send";
 import { buildPushPayload } from "@/lib/push/payloads";
 
+import mongoose from "mongoose";
+import { requireAdmin, canAdminManageSection } from "@/lib/rbac";
+
 // Ensure models are registered
 void Stream;
 void Section;
@@ -34,20 +37,18 @@ function generateTempPassword(length = 10) {
 // GET /api/admin/access-requests — List all access requests
 export async function GET(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    const adminSection = request.headers.get("x-user-section");
+    const authResult = await requireAdmin(request);
+    if (authResult.response) return authResult.response;
+    const { authUser } = authResult;
 
     await connectDB();
 
-    // Section admin only sees requests for their section
+    // Section admin only sees requests for their assigned sections
     const filter: Record<string, unknown> = {};
-    if (!isSuperAdmin && adminSection) {
-      filter.section = adminSection;
+    if (!authUser.isSuperAdmin) {
+      filter.section = {
+        $in: authUser.effectiveSectionIds.map((id: string) => new mongoose.Types.ObjectId(id)),
+      };
     }
 
     const requests = await AccessRequest.find(filter)
@@ -82,13 +83,9 @@ export async function GET(request: Request) {
 // PATCH /api/admin/access-requests — Approve or deny a request
 export async function PATCH(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const adminId = request.headers.get("x-user-id");
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
+    const authResult = await requireAdmin(request);
+    if (authResult.response) return authResult.response;
+    const { authUser } = authResult;
 
     const body = await request.json();
     const { requestId, action, role, admin_note } = body;
@@ -101,7 +98,7 @@ export async function PATCH(request: Request) {
     }
 
     const approvedRole: "student" | "admin" = role === "admin" ? "admin" : "student";
-    if (action === "approve" && approvedRole === "admin" && !isSuperAdmin) {
+    if (action === "approve" && approvedRole === "admin" && !authUser.isSuperAdmin) {
       return NextResponse.json(
         { error: "Only super admin can approve a request as admin" },
         { status: 403 }
@@ -125,11 +122,10 @@ export async function PATCH(request: Request) {
       );
     }
 
-    // H-04: Cross-section IDOR guard — sub-admins can only process requests for their section
-    const adminSection = request.headers.get("x-user-section");
-    if (!isSuperAdmin && adminSection && accessReq.section?.toString() !== adminSection) {
+    // Cross-section IDOR guard — sub-admins can only process requests for their assigned sections
+    if (!canAdminManageSection(authUser, accessReq.section?.toString())) {
       return NextResponse.json(
-        { error: "You can only manage access requests for your own section." },
+        { error: "You can only manage access requests for your assigned section(s)." },
         { status: 403 }
       );
     }
@@ -178,7 +174,7 @@ export async function PATCH(request: Request) {
 
       // Log activity
       await ActivityLog.create({
-        user: adminId!,
+        user: authUser.userId,
         action: "ACCESS_REQUEST_APPROVED",
         details: `Approved access for ${accessReq.name} (${accessReq.college_id}) as ${approvedRole}`,
         section: accessReq.section || null,
@@ -232,7 +228,7 @@ export async function PATCH(request: Request) {
 
       // Log activity
       await ActivityLog.create({
-        user: adminId!,
+        user: authUser.userId,
         action: "ACCESS_REQUEST_DENIED",
         details: `Denied access for ${accessReq.name} (${accessReq.college_id})`,
         section: accessReq.section || null,
@@ -290,13 +286,9 @@ export async function PATCH(request: Request) {
 // DELETE /api/admin/access-requests — Delete a request
 export async function DELETE(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    const adminSection = request.headers.get("x-user-section");
+    const authResult = await requireAdmin(request);
+    if (authResult.response) return authResult.response;
+    const { authUser } = authResult;
 
     const { searchParams } = new URL(request.url);
     const mode = searchParams.get("mode");
@@ -306,8 +298,10 @@ export async function DELETE(request: Request) {
       const filter: Record<string, unknown> = {
         status: { $in: ["approved", "denied"] },
       };
-      if (!isSuperAdmin && adminSection) {
-        filter.section = adminSection;
+      if (!authUser.isSuperAdmin) {
+        filter.section = {
+          $in: authUser.effectiveSectionIds.map((id: string) => new mongoose.Types.ObjectId(id)),
+        };
       }
       const result = await AccessRequest.deleteMany(filter);
       return NextResponse.json({ success: true, deletedCount: result.deletedCount || 0 });
@@ -332,10 +326,10 @@ export async function DELETE(request: Request) {
       );
     }
 
-    // H-04: Cross-section IDOR guard
-    if (!isSuperAdmin && adminSection && deleted.section?.toString() !== adminSection) {
+    // Cross-section IDOR guard
+    if (!canAdminManageSection(authUser, deleted.section?.toString())) {
       return NextResponse.json(
-        { error: "You can only delete access requests for your own section." },
+        { error: "You can only delete access requests for your assigned section(s)." },
         { status: 403 }
       );
     }

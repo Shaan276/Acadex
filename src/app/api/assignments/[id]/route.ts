@@ -1,15 +1,17 @@
 /**
  * @module API/Assignments/[id]
  * @description Single assignment operations.
- * - GET   → fetches one assignment by ID.
- * - PUT   → updates the assignment (admin only).
- * - DELETE → removes the assignment (admin only).
+ * - GET    → fetches one assignment by ID.
+ * - PUT    → updates the assignment (admin with section permission).
+ * - DELETE → removes the assignment (admin with section permission).
  */
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
 import Assignment from "@/models/Assignment";
 import Section from "@/models/Section";
+import Subject from "@/models/Subject";
 import ActivityLog from "@/models/ActivityLog";
+import { requireAdmin, canAdminManageResource } from "@/lib/rbac";
 
 const populateFields = [
   { path: "subject", select: "name type" },
@@ -48,13 +50,12 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const adminId = request.headers.get("x-user-id");
-
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    const authResult = await requireAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
+    const { authUser } = authResult;
     const { id } = await params;
     const body = await request.json();
 
@@ -65,31 +66,60 @@ export async function PUT(
       return NextResponse.json({ error: "Assignment not found" }, { status: 404 });
     }
 
+    // Determine target section if being modified
+    const targetSection =
+      body.section !== undefined ? (body.section || null) : undefined;
+
+    // Check permissions on origin and destination sections
+    if (!canAdminManageResource(authUser, assignment.section?.toString(), targetSection)) {
+      return NextResponse.json(
+        { error: "You do not have permission to manage assignments in this section" },
+        { status: 403 }
+      );
+    }
+
+    // Validate subject if provided
+    if (body.subject !== undefined) {
+      const subjectExists = await Subject.findById(body.subject);
+      if (!subjectExists) {
+        return NextResponse.json(
+          { error: "Selected subject does not exist" },
+          { status: 400 }
+        );
+      }
+      assignment.subject = body.subject;
+    }
+
+    // Validate destination section in DB if provided
+    if (targetSection) {
+      const sectionExists = await Section.findById(targetSection);
+      if (!sectionExists) {
+        return NextResponse.json(
+          { error: "Selected section does not exist" },
+          { status: 400 }
+        );
+      }
+    }
+
     // Update allowed fields
     if (body.title !== undefined) assignment.title = body.title;
     if (body.description !== undefined) assignment.description = body.description;
     if (body.file_url !== undefined) assignment.file_url = body.file_url;
-    if (body.subject !== undefined) assignment.subject = body.subject;
     if (body.deadline !== undefined) {
       assignment.deadline = body.deadline ? new Date(body.deadline) : null;
     }
     if (body.section !== undefined) assignment.section = body.section || null;
-
-    // Section admin can only edit their own section's assignments
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    const adminSection = request.headers.get("x-user-section");
-    if (!isSuperAdmin && assignment.section?.toString() !== adminSection) {
-      return NextResponse.json(
-        { error: "You can only edit assignments from your own section" },
-        { status: 403 }
-      );
+    if (body.sections !== undefined) {
+      assignment.sections = body.sections;
+    } else if (body.section !== undefined) {
+      assignment.sections = body.section ? [body.section] : [];
     }
 
     await assignment.save();
     const populated = await assignment.populate(populateFields);
 
     await ActivityLog.create({
-      user: adminId!,
+      user: authUser.userId,
       action: "ASSIGNMENT_UPDATED",
       details: `Updated assignment: ${assignment.title}`,
       section: assignment.section || null,
@@ -111,14 +141,14 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const adminId = request.headers.get("x-user-id");
-
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    const authResult = await requireAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
+    const { authUser } = authResult;
     const { id } = await params;
+
     await connectDB();
 
     const assignment = await Assignment.findById(id);
@@ -126,12 +156,10 @@ export async function DELETE(
       return NextResponse.json({ error: "Assignment not found" }, { status: 404 });
     }
 
-    // Section admin can only delete their own section's assignments
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    const adminSection = request.headers.get("x-user-section");
-    if (!isSuperAdmin && assignment.section?.toString() !== adminSection) {
+    // Check permission on assignment's section
+    if (!canAdminManageResource(authUser, assignment.section?.toString())) {
       return NextResponse.json(
-        { error: "You can only delete assignments from your own section" },
+        { error: "You do not have permission to delete assignments from this section" },
         { status: 403 }
       );
     }
@@ -139,7 +167,7 @@ export async function DELETE(
     await Assignment.findByIdAndDelete(id);
 
     await ActivityLog.create({
-      user: adminId!,
+      user: authUser.userId,
       action: "ASSIGNMENT_DELETED",
       details: `Deleted assignment: ${assignment.title}`,
       section: assignment.section || null,

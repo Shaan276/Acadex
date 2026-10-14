@@ -1,17 +1,34 @@
 "use client";
 
-import React, { useEffect, useRef, useState, useCallback } from "react";
-import { useTheme } from "next-themes";
-import { Loader2, FileWarning } from "lucide-react";
-import type { UDocClient as UDocClientType, UDocViewer } from "@docmentis/udoc-viewer";
+import React, { useMemo } from "react";
+import dynamic from "next/dynamic";
+import { resolveResource } from "@/lib/resource-resolver";
+import { ImageViewer } from "@/components/image-viewer";
+import { OfficeEmbedViewer } from "@/components/office-embed-viewer";
+import { ExternalResourceCard } from "@/components/external-resource-card";
+import { Button } from "@/components/ui/button";
+import { Download, ExternalLink, AlertCircle, RefreshCw } from "lucide-react";
+
+const PdfViewer = dynamic(
+  () => import("@/components/pdf-viewer").then((mod) => mod.PdfViewer),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex flex-col items-center justify-center p-8 text-center h-full w-full">
+        <RefreshCw className="h-8 w-8 text-primary animate-spin" />
+        <p className="text-xs text-muted-foreground font-medium mt-2">Loading document viewer...</p>
+      </div>
+    ),
+  }
+);
 
 export interface UniversalDocumentViewerProps {
   /**
-   * Document source: either a proxy/blob URL string, a File object, or raw bytes (Uint8Array).
+   * Document source: URL string, File object, or Uint8Array.
    */
-  src: string | Uint8Array | File;
+  src: string | File | Uint8Array;
   /**
-   * Display filename or title. Used for title bar and default download name.
+   * Display filename or document title.
    */
   fileName?: string;
   /**
@@ -19,15 +36,7 @@ export interface UniversalDocumentViewerProps {
    */
   mimeType?: string;
   /**
-   * Explicit theme mode override. Defaults to current Acadex theme from next-themes.
-   */
-  theme?: "light" | "dark" | "system";
-  /**
-   * Callback fired when document has successfully rendered.
-   */
-  onLoadSuccess?: (pageCount: number) => void;
-  /**
-   * Callback fired when document fails to load or parse.
+   * Callback fired on error.
    */
   onError?: (error: Error) => void;
   /**
@@ -38,208 +47,136 @@ export interface UniversalDocumentViewerProps {
 
 export function UniversalDocumentViewer({
   src,
-  fileName = "document",
-  theme: explicitTheme,
-  onLoadSuccess,
+  fileName = "Document",
+  mimeType,
   onError,
   className = "",
 }: UniversalDocumentViewerProps) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const clientRef = useRef<UDocClientType | null>(null);
-  const viewerRef = useRef<UDocViewer | null>(null);
-
-  const [loading, setLoading] = useState(true);
-  const [initError, setInitError] = useState<string | null>(null);
-
-  // Sync with Acadex next-themes
-  const { resolvedTheme } = useTheme();
-  const activeTheme: "light" | "dark" = explicitTheme
-    ? explicitTheme === "system"
-      ? resolvedTheme === "dark"
-        ? "dark"
-        : "light"
-      : explicitTheme
-    : resolvedTheme === "dark"
-    ? "dark"
-    : "light";
-
-  // Keep references to latest callbacks and state without triggering re-renders
-  const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
-  const onLoadSuccessRef = useRef(onLoadSuccess);
-  onLoadSuccessRef.current = onLoadSuccess;
-  const activeThemeRef = useRef(activeTheme);
-  activeThemeRef.current = activeTheme;
-
-  // Track initialization sequence ID to prevent race conditions when switching files quickly
-  const loadSeqRef = useRef(0);
-
-  const initViewer = useCallback(async () => {
-    const seq = ++loadSeqRef.current;
-    if (!containerRef.current || !src) return;
-
-    setLoading(true);
-    setInitError(null);
-
-    // Clean up any existing viewer instance before mounting a new one
-    if (viewerRef.current) {
-      try {
-        viewerRef.current.destroy();
-      } catch (e) {
-        console.warn("[UniversalDocumentViewer] Error destroying previous viewer:", e);
+  // Convert src to a URL string
+  const sourceUrl = useMemo(() => {
+    if (typeof src === "string") return src;
+    if (typeof window !== "undefined") {
+      if (src instanceof File || src instanceof Blob) {
+        return URL.createObjectURL(src);
       }
-      viewerRef.current = null;
-    }
-
-    if (containerRef.current) {
-      containerRef.current.innerHTML = "";
-    }
-
-    try {
-      // Lazy load the WASM-based SDK so it does not bloat initial app bundle
-      const { UDocClient } = await import("@docmentis/udoc-viewer");
-
-      if (seq !== loadSeqRef.current || !containerRef.current) {
-        return;
-      }
-
-      // Reuse client if already created, or initialize new client
-      if (!clientRef.current) {
-        const origin =
-          typeof window !== "undefined" && window.location.origin
-            ? window.location.origin
-            : "";
-        // baseUrl must be an absolute URL with trailing slash for assetUrl/new URL(file, baseUrl) to resolve properly
-        const baseUrl = origin ? `${origin}/udoc/` : "/udoc/";
-        clientRef.current = await UDocClient.create({
-          baseUrl,
-          disableTelemetry: true,
-          disableUpdateCheck: true,
-        });
-      }
-
-      if (seq !== loadSeqRef.current || !containerRef.current) {
-        return;
-      }
-
-      // Create viewer in container
-      const viewer = await clientRef.current.createViewer({
-        container: containerRef.current,
-        theme: activeThemeRef.current,
-        // UI defaults: enable full navigation, thumbnails, search, zoom
-        enablePerformanceCounter: false,
-      });
-
-      if (seq !== loadSeqRef.current) {
-        viewer.destroy();
-        return;
-      }
-
-      viewerRef.current = viewer;
-
-      // Subscribe to viewer events
-      viewer.on("document:load", (payload) => {
-        if (seq === loadSeqRef.current) {
-          setLoading(false);
-          onLoadSuccessRef.current?.(payload.pageCount);
-        }
-      });
-
-      viewer.on("error", (payload) => {
-        if (seq === loadSeqRef.current) {
-          setLoading(false);
-          const err = payload.error || new Error("Failed to render document.");
-          setInitError(err.message);
-          onErrorRef.current?.(err);
-        }
-      });
-
-      // Load document into viewer
-      await viewer.load(src, {
-        filename: fileName,
-      });
-
-      if (seq === loadSeqRef.current) {
-        setLoading(false);
-      }
-    } catch (err: unknown) {
-      if (seq === loadSeqRef.current) {
-        const error = err instanceof Error ? err : new Error(String(err));
-        console.error("[UniversalDocumentViewer] Initialization error:", error);
-        setLoading(false);
-        setInitError(error.message);
-        onErrorRef.current?.(error);
+      if (src instanceof Uint8Array) {
+        const blob = new Blob([src as unknown as BlobPart], { type: mimeType || "application/pdf" });
+        return URL.createObjectURL(blob);
       }
     }
-  }, [src, fileName]);
+    return "";
+  }, [src, mimeType]);
 
-  // Mount/remount viewer on src changes
-  useEffect(() => {
-    initViewer();
-
+  // Clean up object URLs on unmount if one was generated
+  React.useEffect(() => {
     return () => {
-      // Invalidate in-flight loads
-      loadSeqRef.current++;
-      if (viewerRef.current) {
-        try {
-          viewerRef.current.destroy();
-        } catch {
-          // Ignore destruction errors on unmount
-        }
-        viewerRef.current = null;
+      if (typeof src !== "string" && sourceUrl && sourceUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(sourceUrl);
       }
     };
-  }, [initViewer]);
+  }, [src, sourceUrl]);
 
-  // Clean up client on component unmount
-  useEffect(() => {
-    return () => {
-      if (clientRef.current) {
-        try {
-          clientRef.current.destroy();
-        } catch {
-          // Ignore client destruction errors
-        }
-        clientRef.current = null;
-      }
-    };
-  }, []);
+  // Resolve canonical resource metadata and viewer strategy
+  const resolved = useMemo(() => {
+    return resolveResource(sourceUrl, fileName, mimeType);
+  }, [sourceUrl, fileName, mimeType]);
 
-  // Update theme dynamically without reloading the document
-  useEffect(() => {
-    if (viewerRef.current) {
-      try {
-        viewerRef.current.setTheme(activeTheme);
-      } catch (err) {
-        console.warn("[UniversalDocumentViewer] Theme update error:", err);
-      }
-    }
-  }, [activeTheme]);
+  if (!sourceUrl) {
+    return (
+      <div className={`flex flex-col items-center justify-center p-8 text-center bg-muted/20 ${className}`}>
+        <AlertCircle className="h-8 w-8 text-muted-foreground" />
+        <p className="text-xs text-muted-foreground mt-2">No document source provided.</p>
+      </div>
+    );
+  }
 
-  return (
-    <div className={`relative w-full h-full flex flex-col overflow-hidden ${className}`}>
-      {loading && !initError && (
-        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-background/80 backdrop-blur-xs gap-3">
-          <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          <p className="text-sm font-medium text-muted-foreground">Loading document viewer...</p>
-        </div>
-      )}
-
-      {initError && (
-        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-background/95 backdrop-blur-xs gap-3 p-6 text-center">
-          <div className="p-3 rounded-full bg-destructive/10 text-destructive">
-            <FileWarning className="h-6 w-6" />
-          </div>
-          <h3 className="font-semibold text-base">Unable to View Document</h3>
-          <p className="text-xs text-muted-foreground max-w-md">{initError}</p>
-        </div>
-      )}
-
-      {/* Mounting container for UDocViewer */}
-      <div
-        ref={containerRef}
-        className="w-full h-full flex-1 min-h-0 udoc-viewer-container"
+  // 1. PDF.js Viewer
+  if (resolved.viewerKind === "pdfjs") {
+    return (
+      <PdfViewer
+        url={resolved.previewUrl}
+        title={resolved.title}
+        downloadUrl={resolved.downloadUrl}
+        onError={onError}
+        className={className}
       />
+    );
+  }
+
+  // 2. Responsive Image Viewer
+  if (resolved.viewerKind === "image") {
+    return (
+      <ImageViewer
+        url={resolved.previewUrl}
+        title={resolved.title}
+        downloadUrl={resolved.downloadUrl}
+        className={className}
+      />
+    );
+  }
+
+  // 3. Office & Google Workspace Embedded Iframe Viewer
+  if (resolved.viewerKind === "office_iframe" || resolved.viewerKind === "google_iframe") {
+    return (
+      <OfficeEmbedViewer
+        previewUrl={resolved.previewUrl}
+        directOpenUrl={resolved.directOpenUrl}
+        downloadUrl={resolved.downloadUrl}
+        title={resolved.title}
+        className={className}
+      />
+    );
+  }
+
+  // 4. External Website Card
+  if (resolved.viewerKind === "external_card") {
+    return (
+      <ExternalResourceCard
+        url={resolved.rawUrl}
+        title={resolved.title}
+        className={className}
+      />
+    );
+  }
+
+  // 5. Unsupported / Fallback View
+  return (
+    <div className={`flex flex-col items-center justify-center p-6 h-full w-full bg-muted/20 ${className}`}>
+      <div className="flex flex-col items-center max-w-sm w-full bg-card rounded-2xl border border-border shadow-xs p-6 text-center gap-3">
+        <AlertCircle className="h-8 w-8 text-muted-foreground" />
+        <h3 className="text-sm font-semibold text-foreground">Preview Not Available</h3>
+        <p className="text-xs text-muted-foreground">
+          This file format cannot be previewed in the browser. You can download it or open the original link.
+        </p>
+
+        <div className="flex items-center gap-2 mt-2 w-full">
+          {resolved.downloadUrl && (
+            <a
+              href={resolved.downloadUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1"
+            >
+              <Button size="sm" className="w-full gap-1.5 rounded-xl text-xs">
+                <Download className="h-3.5 w-3.5" /> Download File
+              </Button>
+            </a>
+          )}
+
+          {resolved.directOpenUrl && (
+            <a
+              href={resolved.directOpenUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1"
+            >
+              <Button variant="outline" size="sm" className="w-full gap-1.5 rounded-xl text-xs">
+                <ExternalLink className="h-3.5 w-3.5" /> Open Link
+              </Button>
+            </a>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -8,6 +8,9 @@ import Notification from "@/models/Notification";
 import User from "@/models/User";
 import ActivityLog from "@/models/ActivityLog";
 
+import mongoose from "mongoose";
+import { getAuthUser, requireAdmin, canAdminManageSection } from "@/lib/rbac";
+
 // Ensure models are registered for populate
 void Note;
 void Assignment;
@@ -125,12 +128,11 @@ function buildReqTypeFilter(reqType: "Upload" | "edit" | "remove"): Record<strin
 // Admin/super-admin: all for their section (super sees all). Student: their own.
 export async function GET(request: Request) {
   try {
-    // 1) Read identity and query parameters supplied by middleware/client.
-    const userId = request.headers.get("x-user-id");
-    const userRole = request.headers.get("x-user-role");
-    const isSuperAdmin =
-      request.headers.get("x-user-is-super-admin") === "true";
-    const userSection = request.headers.get("x-user-section");
+    const authUser = await getAuthUser(request);
+    if (!authUser) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const { searchParams } = new URL(request.url);
     const reqTypeParamRaw = searchParams.get("reqType") || searchParams.get("requestKind");
     const reqTypeParam = reqTypeParamRaw
@@ -138,19 +140,17 @@ export async function GET(request: Request) {
       : null;
     const semesterParam = searchParams.get("semester");
 
-    if (!userId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     await connectDB();
 
     // 2) Build role-scoped list filter.
     const filter: Record<string, unknown> = {};
 
-    if (userRole === "admin") {
-      // Super admin sees all, sub-admin sees their section's uploads
-      if (!isSuperAdmin && userSection) {
-        filter.section = userSection;
+    if (authUser.role === "admin") {
+      // Super admin sees all, sub-admin sees their assigned sections' uploads
+      if (!authUser.isSuperAdmin) {
+        filter.section = {
+          $in: authUser.effectiveSectionIds.map((id) => new mongoose.Types.ObjectId(id)),
+        };
       }
 
       if (reqTypeParam) {
@@ -158,7 +158,7 @@ export async function GET(request: Request) {
       }
 
       // Super-admin optional semester filter.
-      if (isSuperAdmin && semesterParam && semesterParam !== "all") {
+      if (authUser.isSuperAdmin && semesterParam && semesterParam !== "all") {
         const semesterNum = Number(semesterParam);
         if (!Number.isNaN(semesterNum) && semesterNum >= 1 && semesterNum <= 8) {
           const SubjectModel = (await import("@/models/Subject")).default;
@@ -174,7 +174,7 @@ export async function GET(request: Request) {
       }
     } else {
       // Students see only their own uploads
-      filter.uploadedBy = userId;
+      filter.uploadedBy = authUser.userId;
 
       if (reqTypeParam) {
         Object.assign(filter, buildReqTypeFilter(reqTypeParam));
@@ -206,7 +206,7 @@ export async function GET(request: Request) {
     // disabled by setting DISABLE_UPLOAD_RECONCILIATION=true in environment variables.
     // TODO: Migrate this logic to a one-time migration script (node scripts/reconcile-uploads.ts).
     const reconciliationEnabled = process.env.DISABLE_UPLOAD_RECONCILIATION !== "true";
-    if (reconciliationEnabled && userRole === "admin") {
+    if (reconciliationEnabled && authUser.role === "admin") {
       for (const upload of uploads) {
         if (!upload.resourceId || upload.status !== "pending") continue;
 
@@ -246,7 +246,7 @@ export async function GET(request: Request) {
     }
 
     // Backfill missing resourceId for old approved create requests so edit/remove can work.
-    if (userRole !== "admin") {
+    if (authUser.role !== "admin") {
       const needsBackfill = uploads.filter((upload) => {
         const kind = resolveRequestFlags(
           (upload as { requestKind?: string; reqType?: string }).requestKind || null,
@@ -338,19 +338,19 @@ export async function GET(request: Request) {
       createdAt: string;
     }> = [];
 
-    if (userRole !== "admin") {
+    if (authUser.role !== "admin") {
       const [notes, assignments, practicals] = await Promise.all([
-        Note.find({ uploadedBy: userId })
+        Note.find({ uploadedBy: authUser.userId })
           .populate("subject", "name")
           .populate("section", "name")
           .select("title file_url subject section uploadedAt createdAt")
           .lean(),
-        Assignment.find({ uploadedBy: userId })
+        Assignment.find({ uploadedBy: authUser.userId })
           .populate("subject", "name")
           .populate("section", "name")
           .select("title description file_url subject section createdAt")
           .lean(),
-        Practical.find({ uploadedBy: userId })
+        Practical.find({ uploadedBy: authUser.userId })
           .populate("subject", "name")
           .populate("section", "name")
           .select("title description file_url subject section createdAt")
@@ -413,14 +413,8 @@ export async function GET(request: Request) {
 // POST /api/user-uploads — Submit an upload request (student) or directly upload (admin)
 export async function POST(request: Request) {
   try {
-    // 1) Read caller identity from middleware headers.
-    const userId = request.headers.get("x-user-id");
-    const userRole = request.headers.get("x-user-role");
-    const isSuperAdmin =
-      request.headers.get("x-user-is-super-admin") === "true";
-    const userSection = request.headers.get("x-user-section");
-
-    if (!userId) {
+    const authUser = await getAuthUser(request);
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -483,16 +477,30 @@ export async function POST(request: Request) {
     await connectDB();
 
     // Admins directly create the resource — no approval needed
-    if (userRole === "admin") {
+    if (authUser.role === "admin") {
       if (requestKind !== "create") {
         return NextResponse.json(
           { error: "Admins can only use direct create uploads here" },
           { status: 400 }
         );
       }
-      // Section: super admin can choose, sub-admin uses their own section
-      const sectionId =
-        isSuperAdmin && section ? section : userSection || null;
+      // Section: super admin can choose, sub-admin must be assigned
+      let sectionId: string | null = null;
+      if (authUser.isSuperAdmin) {
+        sectionId = section || null;
+      } else {
+        if (section) {
+          if (!canAdminManageSection(authUser, section)) {
+            return NextResponse.json(
+              { error: "Cannot upload to an unassigned section" },
+              { status: 403 }
+            );
+          }
+          sectionId = section;
+        } else {
+          sectionId = authUser.effectiveSectionIds[0] || null;
+        }
+      }
 
       let created;
       if (type === "note") {
@@ -501,7 +509,7 @@ export async function POST(request: Request) {
           file_url: file_url.trim(),
           subject,
           section: sectionId,
-          uploadedBy: userId,
+          uploadedBy: authUser.userId,
         });
       } else if (type === "assignment") {
         created = await Assignment.create({
@@ -510,7 +518,7 @@ export async function POST(request: Request) {
           file_url: file_url.trim(),
           subject,
           section: sectionId,
-          uploadedBy: userId,
+          uploadedBy: authUser.userId,
           deadline: deadline || null,
         });
       } else {
@@ -520,12 +528,12 @@ export async function POST(request: Request) {
           file_url: file_url.trim(),
           subject,
           section: sectionId,
-          uploadedBy: userId,
+          uploadedBy: authUser.userId,
         });
       }
 
       await ActivityLog.create({
-        user: userId!,
+        user: authUser.userId,
         action: `${type.toUpperCase()}_ADDED`,
         details: `Admin uploaded ${type}: "${title.trim()}"`,
         section: sectionId || null,
@@ -583,7 +591,7 @@ export async function POST(request: Request) {
 
       if (
         targetResource.uploadedBy &&
-        String(targetResource.uploadedBy) !== userId
+        String(targetResource.uploadedBy) !== authUser.userId
       ) {
         return NextResponse.json(
           { error: "You can only request changes for your own uploaded resources" },
@@ -619,7 +627,7 @@ export async function POST(request: Request) {
       }
 
       const duplicatePending = await UserUpload.findOne({
-        uploadedBy: userId,
+        uploadedBy: authUser.userId,
         requestKind,
         resourceId,
         status: "pending",
@@ -641,18 +649,22 @@ export async function POST(request: Request) {
       description: (description || "").trim(),
       file_url: file_url.trim(),
       subject,
-      section: userSection || null,
-      uploadedBy: userId,
+      section: authUser.section || null,
+      uploadedBy: authUser.userId,
     });
 
     // Notify admins of this section + super admins
     const adminFilter: Record<string, unknown> = {
       role: "admin",
-      $or: [
-        { isSuperAdmin: true },
-        ...(userSection ? [{ section: userSection }] : []),
-      ],
+      status: "active",
     };
+    if (authUser.section) {
+      adminFilter.$or = [
+        { isSuperAdmin: true },
+        { section: authUser.section },
+        { assignedSections: authUser.section },
+      ];
+    }
     const admins = await User.find(adminFilter).select("_id").lean();
     const adminIds = admins.map((a) => a._id);
 
@@ -685,13 +697,9 @@ export async function POST(request: Request) {
 // PATCH /api/user-uploads — Approve or deny an upload (admin only)
 export async function PATCH(request: Request) {
   try {
-    // 1) Only admins can review requests.
-    const userId = request.headers.get("x-user-id");
-    const userRole = request.headers.get("x-user-role");
-
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
+    const authResult = await requireAdmin(request);
+    if (authResult.response) return authResult.response;
+    const { authUser } = authResult;
 
     const body = await request.json();
     const { uploadId, action, admin_note } = body;
@@ -705,7 +713,7 @@ export async function PATCH(request: Request) {
 
     await connectDB();
 
-    // M-13: Atomically lock the request to prevent double-approval duplicates
+    // Atomically lock the request to prevent double-approval duplicates
     const upload = await UserUpload.findOneAndUpdate(
       { _id: uploadId, status: "pending" },
       { status: "processing" },
@@ -726,14 +734,12 @@ export async function PATCH(request: Request) {
       );
     }
 
-    // H-05: Sub-admins can only approve/deny requests belonging to their section
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    const userSection = request.headers.get("x-user-section");
-    if (!isSuperAdmin && userSection && upload.section && upload.section.toString() !== userSection) {
+    // Sub-admins can only approve/deny requests belonging to their assigned section(s)
+    if (!canAdminManageSection(authUser, upload.section?.toString())) {
       // Rollback the processing lock
       await UserUpload.findByIdAndUpdate(uploadId, { status: "pending" });
       return NextResponse.json(
-        { error: "You can only review requests for your own section" },
+        { error: "You can only review requests for your assigned section(s)" },
         { status: 403 }
       );
     }
@@ -829,11 +835,11 @@ export async function PATCH(request: Request) {
 
       upload.status = "approved";
       upload.admin_note = (admin_note || "").slice(0, 500);
-      upload.reviewedBy = userId as unknown as typeof upload.reviewedBy;
+      upload.reviewedBy = new mongoose.Types.ObjectId(authUser.userId) as unknown as typeof upload.reviewedBy;
       await upload.save();
 
       await ActivityLog.create({
-        user: userId!,
+        user: authUser.userId,
         action: "USER_UPLOAD_APPROVED",
         details: `Approved ${upload.requestKind} ${upload.type} request: "${upload.title}"`,
         section: upload.section || null,
@@ -868,11 +874,11 @@ export async function PATCH(request: Request) {
       // Deny
       upload.status = "denied";
       upload.admin_note = (admin_note || "").slice(0, 500);
-      upload.reviewedBy = userId as unknown as typeof upload.reviewedBy;
+      upload.reviewedBy = new mongoose.Types.ObjectId(authUser.userId) as unknown as typeof upload.reviewedBy;
       await upload.save();
 
       await ActivityLog.create({
-        user: userId!,
+        user: authUser.userId,
         action: "USER_UPLOAD_DENIED",
         details: `Denied ${upload.requestKind} ${upload.type} request: "${upload.title}"`,
         section: upload.section || null,
@@ -907,11 +913,8 @@ export async function PATCH(request: Request) {
 // DELETE /api/user-uploads — Delete an upload request
 export async function DELETE(request: Request) {
   try {
-    // Supports single request delete and bulk student clear actions.
-    const userId = request.headers.get("x-user-id");
-    const userRole = request.headers.get("x-user-role");
-
-    if (!userId) {
+    const authUser = await getAuthUser(request);
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -922,14 +925,14 @@ export async function DELETE(request: Request) {
     await connectDB();
 
     if (mode) {
-      if (userRole === "admin") {
+      if (authUser.role === "admin") {
         return NextResponse.json(
           { error: "Bulk clear is only available for normal users" },
           { status: 403 }
         );
       }
 
-      const bulkFilter: Record<string, unknown> = { uploadedBy: userId };
+      const bulkFilter: Record<string, unknown> = { uploadedBy: authUser.userId };
       if (mode === "approved") bulkFilter.status = "approved";
       else if (mode === "denied") bulkFilter.status = "denied";
       else if (mode !== "all") {
@@ -958,9 +961,16 @@ export async function DELETE(request: Request) {
       );
     }
 
-    // Students can delete their own requests (any status). Admins can delete any.
-    if (userRole !== "admin" && upload.uploadedBy.toString() !== userId) {
+    // Students can delete their own requests. Admins can delete requests for their assigned sections.
+    if (authUser.role !== "admin" && upload.uploadedBy.toString() !== authUser.userId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    if (authUser.role === "admin" && !canAdminManageSection(authUser, upload.section?.toString())) {
+      return NextResponse.json(
+        { error: "You can only delete requests for your assigned section(s)" },
+        { status: 403 }
+      );
     }
 
     await UserUpload.findByIdAndDelete(uploadId);

@@ -1,34 +1,25 @@
 /**
  * @module API/Streams/[id]
  * @description Single stream operations.
- * - PUT   → updates the stream's name/subjects (admin with `isAdminStream` or super admin).
- * - DELETE → removes the stream.
+ * - PUT    → updates the stream's name/subjects (super admin only).
+ * - DELETE → removes the stream (super admin only).
  */
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
 import Stream from "@/models/Stream";
 import Subject from "@/models/Subject";
 import User from "@/models/User";
+import { requireSuperAdmin } from "@/lib/rbac";
 
-// PUT /api/streams/[id] - Update a stream (admin with isAdminStream or super admin)
+// PUT /api/streams/[id] - Update a stream (super admin only)
 export async function PUT(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const role = request.headers.get("x-user-role");
-    if (role !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    if (!isSuperAdmin) {
-      const userId = request.headers.get("x-user-id");
-      await connectDB();
-      const admin = await User.findById(userId).select("isAdminStream").lean();
-      if (!admin?.isAdminStream) {
-        return NextResponse.json({ error: "You don't have permission to manage streams" }, { status: 403 });
-      }
+    const authResult = await requireSuperAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
     const { id } = await params;
@@ -58,6 +49,17 @@ export async function PUT(
     }
 
     if (subjects !== undefined) {
+      if (Array.isArray(subjects) && subjects.length > 0) {
+        const validSubjectCount = await Subject.countDocuments({
+          _id: { $in: subjects },
+        });
+        if (validSubjectCount !== subjects.length) {
+          return NextResponse.json(
+            { error: "One or more selected subjects do not exist" },
+            { status: 400 }
+          );
+        }
+      }
       stream.subjects = subjects;
     }
 
@@ -76,25 +78,15 @@ export async function PUT(
   }
 }
 
-// DELETE /api/streams/[id] - Delete a stream (admin with isAdminStream or super admin)
+// DELETE /api/streams/[id] - Delete a stream (super admin only)
 export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const role = request.headers.get("x-user-role");
-    if (role !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    if (!isSuperAdmin) {
-      const userId = request.headers.get("x-user-id");
-      await connectDB();
-      const admin = await User.findById(userId).select("isAdminStream").lean();
-      if (!admin?.isAdminStream) {
-        return NextResponse.json({ error: "You don't have permission to manage streams" }, { status: 403 });
-      }
+    const authResult = await requireSuperAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
     const { id } = await params;
@@ -119,7 +111,7 @@ export async function DELETE(
 
     await Stream.findByIdAndDelete(id);
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ message: "Stream deleted successfully" });
   } catch (error) {
     console.error("Delete stream error:", error);
     return NextResponse.json(

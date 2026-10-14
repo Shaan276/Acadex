@@ -216,12 +216,12 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const isAdmin = user.role === "admin";
   const showingAdminView = isAdmin && isOnAdminRoute;
 
-  // Build admin links dynamically based on permissions
+  // Build admin links dynamically based on permissions (Configure items are Superadmin-only)
   const links = showingAdminView
     ? adminLinks.filter((link) => {
-        if (link.href === "/admin/subjects") return user.isAdminSubject;
-        if (link.href === "/admin/streams") return user.isAdminStream;
-        if (link.href === "/admin/sections") return user.isAdminSection;
+        if (link.href === "/admin/subjects") return Boolean(user.isSuperAdmin);
+        if (link.href === "/admin/streams") return Boolean(user.isSuperAdmin);
+        if (link.href === "/admin/sections") return Boolean(user.isSuperAdmin);
         return true;
       })
     : studentLinks;

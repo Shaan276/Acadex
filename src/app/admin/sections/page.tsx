@@ -1,10 +1,11 @@
 /**
  * @page AdminSections (/admin/sections)
- * @description Admin CRUD for class sections (create, rename, delete).
+ * @description Superadmin CRUD for class sections (create, rename, delete) with search and emoji stripping.
  */
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,6 +34,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Search, X } from "lucide-react";
 
 interface Section {
   _id: string;
@@ -40,9 +42,15 @@ interface Section {
   createdAt: string;
 }
 
+// Utility to remove emojis from names and titles
+const stripEmojis = (str: string) =>
+  str.replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}]/gu, "").trim();
+
 export default function ManageSectionsPage() {
+  const router = useRouter();
   const [sections, setSections] = useState<Section[]>([]);
   const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Add form state
   const [showAddForm, setShowAddForm] = useState(false);
@@ -60,11 +68,22 @@ export default function ManageSectionsPage() {
   const [deleteSection, setDeleteSection] = useState<Section | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const fetchSections = async () => {
+  const fetchData = async () => {
     try {
-      const res = await fetch("/api/sections");
-      const data = await res.json();
-      if (res.ok) setSections(data.sections || []);
+      const [meRes, secRes] = await Promise.all([
+        fetch("/api/auth/me"),
+        fetch("/api/sections"),
+      ]);
+
+      const meData = await meRes.json();
+      if (!meData.user?.isSuperAdmin) {
+        toast.error("Superadmin access required");
+        router.replace("/admin");
+        return;
+      }
+
+      const secData = await secRes.json();
+      if (secRes.ok) setSections(secData.sections || []);
     } catch {
       toast.error("Failed to fetch sections");
     } finally {
@@ -73,18 +92,30 @@ export default function ManageSectionsPage() {
   };
 
   useEffect(() => {
-    fetchSections();
+    fetchData();
   }, []);
+
+  const filteredSections = useMemo(() => {
+    if (!searchQuery.trim()) return sections;
+    const q = searchQuery.toLowerCase().trim();
+    return sections.filter((s) => stripEmojis(s.name).toLowerCase().includes(q) || s.name.toLowerCase().includes(q));
+  }, [sections, searchQuery]);
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
+    const cleaned = stripEmojis(addName);
+    if (!cleaned) {
+      toast.error("Section name cannot be empty");
+      return;
+    }
+
     setAddLoading(true);
 
     try {
       const res = await fetch("/api/sections", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: addName }),
+        body: JSON.stringify({ name: cleaned }),
       });
 
       const data = await res.json();
@@ -94,10 +125,10 @@ export default function ManageSectionsPage() {
         return;
       }
 
-      toast.success(`Section "${addName}" created!`);
+      toast.success(`Section "${cleaned}" created!`);
       setAddName("");
       setShowAddForm(false);
-      fetchSections();
+      fetchData();
     } catch {
       toast.error("Something went wrong");
     } finally {
@@ -107,19 +138,25 @@ export default function ManageSectionsPage() {
 
   const openEditDialog = (section: Section) => {
     setEditSection(section);
-    setEditName(section.name);
+    setEditName(stripEmojis(section.name));
     setEditDialogOpen(true);
   };
 
   const handleEdit = async () => {
     if (!editSection) return;
+    const cleaned = stripEmojis(editName);
+    if (!cleaned) {
+      toast.error("Section name cannot be empty");
+      return;
+    }
+
     setSaving(true);
 
     try {
       const res = await fetch(`/api/sections/${editSection._id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: editName }),
+        body: JSON.stringify({ name: cleaned }),
       });
 
       const data = await res.json();
@@ -131,7 +168,7 @@ export default function ManageSectionsPage() {
 
       toast.success("Section updated!");
       setEditDialogOpen(false);
-      fetchSections();
+      fetchData();
     } catch {
       toast.error("Something went wrong");
     } finally {
@@ -181,7 +218,7 @@ export default function ManageSectionsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Sections</h1>
           <p className="text-muted-foreground">
@@ -207,8 +244,8 @@ export default function ManageSectionsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleAdd} className="flex gap-4 items-end">
-              <div className="flex-1 space-y-2">
+            <form onSubmit={handleAdd} className="flex flex-col sm:flex-row gap-4 items-end">
+              <div className="flex-1 w-full space-y-2">
                 <Label htmlFor="sectionName">Section Name</Label>
                 <Input
                   id="sectionName"
@@ -232,6 +269,25 @@ export default function ManageSectionsPage() {
         </Card>
       )}
 
+      {/* Search Input */}
+      <div className="relative max-w-sm">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <Input
+          placeholder="Search sections..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="pl-9 pr-9 rounded-xl"
+        />
+        {searchQuery && (
+          <button
+            onClick={() => setSearchQuery("")}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+
       {/* Sections Table */}
       <Card className="rounded-2xl">
         <CardHeader>
@@ -241,9 +297,11 @@ export default function ManageSectionsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {sections.length === 0 ? (
+          {filteredSections.length === 0 ? (
             <p className="text-center text-muted-foreground py-8">
-              No sections yet. Click &ldquo;+ Add Section&rdquo; to create one.
+              {searchQuery
+                ? `No sections matching "${searchQuery}"`
+                : "No sections yet. Click \u201C+ Add Section\u201D to create one."}
             </p>
           ) : (
             <div className="overflow-x-auto">
@@ -256,11 +314,11 @@ export default function ManageSectionsPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {sections.map((section) => (
+                  {filteredSections.map((section) => (
                     <TableRow key={section._id}>
                       <TableCell>
                         <Badge variant="outline" className="rounded-full text-sm">
-                          {section.name}
+                          {stripEmojis(section.name) || section.name}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
@@ -305,7 +363,7 @@ export default function ManageSectionsPage() {
           <DialogHeader>
             <DialogTitle>Rename Section</DialogTitle>
             <DialogDescription>
-              Update the section name for &ldquo;{editSection?.name}&rdquo;.
+              Update the section name for &ldquo;{stripEmojis(editSection?.name || "")}&rdquo;.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-2">
@@ -340,7 +398,7 @@ export default function ManageSectionsPage() {
           <DialogHeader>
             <DialogTitle>Delete Section</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete &ldquo;{deleteSection?.name}&rdquo;?
+              Are you sure you want to delete &ldquo;{stripEmojis(deleteSection?.name || "")}&rdquo;?
               This will fail if users or content are still assigned to this section.
             </DialogDescription>
           </DialogHeader>

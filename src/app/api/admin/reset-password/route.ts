@@ -11,17 +11,14 @@ import { resetPasswordSchema } from "@/lib/validations";
 import User from "@/models/User";
 import ActivityLog from "@/models/ActivityLog";
 
+import { requireAdmin, canAdminManageSection } from "@/lib/rbac";
+
 // POST /api/admin/reset-password - Reset a user's password
 export async function POST(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const adminId = request.headers.get("x-user-id");
-    const isSuperAdmin = request.headers.get("x-is-super-admin") === "true";
-    const adminSection = request.headers.get("x-user-section");
-
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
+    const authResult = await requireAdmin(request);
+    if (authResult.response) return authResult.response;
+    const { authUser } = authResult;
 
     const body = await request.json();
 
@@ -42,18 +39,18 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    // C-03: Prevent sub-admins from resetting super-admin passwords
-    if (!isSuperAdmin && user.isSuperAdmin) {
+    // Prevent sub-admins from resetting another admin or super-admin's password
+    if (!authUser.isSuperAdmin && (user.role === "admin" || user.isSuperAdmin)) {
       return NextResponse.json(
-        { error: "You cannot reset a super-admin's password." },
+        { error: "Only super-admins can reset an admin's password." },
         { status: 403 }
       );
     }
 
-    // C-03: Prevent sub-admins from resetting users in other sections
-    if (!isSuperAdmin && adminSection && user.section?.toString() !== adminSection) {
+    // Prevent sub-admins from resetting users outside their assigned sections
+    if (!canAdminManageSection(authUser, user.section?.toString())) {
       return NextResponse.json(
-        { error: "You can only reset passwords for users in your own section." },
+        { error: "You can only reset passwords for users in your assigned section(s)." },
         { status: 403 }
       );
     }
@@ -70,7 +67,7 @@ export async function POST(request: Request) {
 
     // Log activity
     await ActivityLog.create({
-      user: adminId!,
+      user: authUser.userId,
       action: "PASSWORD_RESET",
       details: `Reset password for: ${user.name} (${user.college_id})`,
       section: user.section || null,

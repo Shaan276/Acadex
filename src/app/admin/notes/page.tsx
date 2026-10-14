@@ -4,7 +4,7 @@
  */
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,6 +38,7 @@ import { uploadFileDirectToDestination } from "@/lib/direct-upload";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { MultiSelect } from "@/components/multi-select";
+import { Search, X } from "lucide-react";
 
 interface Subject {
   _id: string;
@@ -83,6 +84,20 @@ export default function ManageNotesPage() {
   const [filtersHydrated, setFiltersHydrated] = useState(false);
   const saveFiltersTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [expandedSubjects, setExpandedSubjects] = useState<Record<string, boolean>>({});
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const filteredNotes = useMemo(() => {
+    if (!searchQuery.trim()) return notes;
+    const q = searchQuery.toLowerCase().trim();
+    return notes.filter((n) => {
+      const titleMatch = n.title.toLowerCase().includes(q);
+      const subjectMatch = (n.subject?.name || "").toLowerCase().includes(q);
+      const sectionMatch =
+        (n.section?.name || "").toLowerCase().includes(q) ||
+        (n.sections || []).some((s) => s.name.toLowerCase().includes(q));
+      return titleMatch || subjectMatch || sectionMatch;
+    });
+  }, [notes, searchQuery]);
 
   // Add form state
   const [showAddForm, setShowAddForm] = useState(false);
@@ -321,7 +336,7 @@ export default function ManageNotesPage() {
           subject: addSubject,
           title: addTitle,
           file_url: finalFileUrl,
-          ...(isSuperAdmin && addSections.length > 0 && { sections: addSections }),
+          ...(addSections.length > 0 && { sections: addSections }),
         }),
       });
 
@@ -534,6 +549,26 @@ export default function ManageNotesPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {/* Search Input */}
+          <div className="relative w-full sm:w-[200px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search notes..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9 pr-8 rounded-xl h-10"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+
           <Select value={selectedSubjectFilter} onValueChange={setSelectedSubjectFilter}>
             <SelectTrigger className="w-[170px] rounded-xl">
               <SelectValue placeholder="Subject" />
@@ -641,21 +676,21 @@ export default function ManageNotesPage() {
                   resourceType="Notes"
                   label="PDF Document / File"
                 />
-                {isSuperAdmin && sections.length > 0 ? (
+                {sections.length > 0 ? (
                   <div className="space-y-2">
                     <Label>Sections</Label>
                     <MultiSelect
                       options={sections.map(s => ({ label: s.name, value: s._id }))}
                       selected={addSections}
                       onChange={setAddSections}
-                      placeholder="Select sections (optional)"
+                      placeholder={isSuperAdmin ? "Select sections (optional)" : "Select assigned sections"}
                     />
                   </div>
                 ) : (
                   <div className="space-y-2">
                     <Label>Section</Label>
                     <Input
-                      value="Auto (your section)"
+                      value="No sections available"
                       disabled
                       className="rounded-xl"
                     />
@@ -686,14 +721,16 @@ export default function ManageNotesPage() {
         </Card>
       ) : (
         (() => {
-          const filtered = notes;
+          const filtered = filteredNotes;
 
           if (filtered.length === 0) {
             return (
               <Card className="rounded-2xl">
                 <CardContent className="py-8">
                   <p className="text-center text-muted-foreground">
-                    No notes found for selected filters.
+                    {searchQuery
+                      ? `No notes matching "${searchQuery}"`
+                      : "No notes found for selected filters."}
                   </p>
                 </CardContent>
               </Card>
@@ -720,7 +757,7 @@ export default function ManageNotesPage() {
                   }
                 >
                   <CardTitle className="text-base font-semibold flex items-center gap-2">
-                    📚 {subjectName}
+                    {subjectName}
                     <Badge variant="secondary" className="rounded-full text-xs">
                       {subjectNotes.length}
                     </Badge>

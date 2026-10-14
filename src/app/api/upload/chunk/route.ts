@@ -5,12 +5,21 @@
  */
 import { NextResponse } from "next/server";
 import { makeDriveFilePublic } from "@/lib/gdrive";
+import { getAuthUser } from "@/lib/rbac";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
+    const authUser = await getAuthUser(request);
+    if (!authUser) {
+      return NextResponse.json(
+        { error: "Unauthorized. Please log in to upload files." },
+        { status: 401 }
+      );
+    }
+
     const uploadUrl = request.headers.get("x-upload-url");
     const contentRange = request.headers.get("content-range");
     const contentType = request.headers.get("content-type") || "application/pdf";

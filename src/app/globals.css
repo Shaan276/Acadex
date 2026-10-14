@@ -601,19 +601,4 @@
     scroll-behavior: auto !important;
   }
 }
-
-/* @docmentis/udoc-viewer Acadex Theme Mappings */
-.udoc-viewer-container {
-  height: 100%;
-  width: 100%;
-}
-
-.udoc-viewer-root {
-  font-family: var(--font-geist-sans), system-ui, -apple-system, sans-serif !important;
-  --udoc-bg-viewport: var(--muted);
-  --udoc-bg-surface: var(--card);
-  --udoc-border: var(--border);
-  --udoc-primary: var(--primary);
-  --udoc-text-primary: var(--foreground);
-  --udoc-text-secondary: var(--muted-foreground);
-}
+

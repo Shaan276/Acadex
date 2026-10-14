@@ -87,6 +87,7 @@ export default function AdminDashboard() {
     pendingRequests: 0,
     unreadMessages: 0,
   });
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [layout, setLayout] = useState<DashboardLayout>(() => {
@@ -99,8 +100,9 @@ export default function AdminDashboard() {
   useEffect(() => {
     async function fetchAll() {
       try {
-        const [studentsRes, notesRes, assignmentsRes, practicalsRes, subjectsRes, streamsRes, sectionsRes, dashStatsRes, activityRes] =
+        const [meRes, studentsRes, notesRes, assignmentsRes, practicalsRes, subjectsRes, streamsRes, sectionsRes, dashStatsRes, activityRes] =
           await Promise.all([
+            fetch("/api/auth/me"),
             fetch("/api/admin/students"),
             fetch("/api/notes"),
             fetch("/api/assignments"),
@@ -111,6 +113,10 @@ export default function AdminDashboard() {
             fetch("/api/admin/dashboard-stats"),
             fetch("/api/admin/activity"),
           ]);
+
+        const meData = meRes.ok ? await meRes.json() : null;
+        const superAdmin = Boolean(meData?.user?.isSuperAdmin);
+        setIsSuperAdmin(superAdmin);
 
         const studentsData = await studentsRes.json();
         const notesData = await notesRes.json();
@@ -154,9 +160,11 @@ export default function AdminDashboard() {
     { title: "Notes", value: stats.totalNotes, icon: "📄", href: "/admin/notes" },
     { title: "Assignments", value: stats.totalAssignments, icon: "📝", href: "/admin/assignments" },
     { title: "Practicals", value: stats.totalPracticals, icon: "🧪", href: "/admin/practicals" },
-    { title: "Subjects", value: stats.totalSubjects, icon: "📚", href: "/admin/subjects" },
-    { title: "Streams", value: stats.totalStreams, icon: "🎓", href: "/admin/streams" },
-    { title: "Sections", value: stats.totalSections, icon: "🏫", href: "/admin/sections" },
+    ...(isSuperAdmin ? [
+      { title: "Subjects", value: stats.totalSubjects, icon: "📚", href: "/admin/subjects" },
+      { title: "Streams", value: stats.totalStreams, icon: "🎓", href: "/admin/streams" },
+      { title: "Sections", value: stats.totalSections, icon: "🏫", href: "/admin/sections" },
+    ] : []),
   ];
 
   const quickLinks = [
@@ -164,11 +172,15 @@ export default function AdminDashboard() {
     { label: "Notes", href: "/admin/notes", icon: "📄" },
     { label: "Assignments", href: "/admin/assignments", icon: "📝" },
     { label: "Practicals", href: "/admin/practicals", icon: "🧪" },
-    { label: "Subjects", href: "/admin/subjects", icon: "📚" },
-    { label: "Streams", href: "/admin/streams", icon: "🎓" },
-    { label: "Sections", href: "/admin/sections", icon: "🏫" },
+    ...(isSuperAdmin ? [
+      { label: "Subjects", href: "/admin/subjects", icon: "📚" },
+      { label: "Streams", href: "/admin/streams", icon: "🎓" },
+      { label: "Sections", href: "/admin/sections", icon: "🏫" },
+    ] : []),
     { label: "Access Requests", href: "/admin/access-requests", icon: "🔔" },
-    { label: "Admin Requests", href: "/admin/admin-requests", icon: "🛡️" },
+    ...(isSuperAdmin ? [
+      { label: "Admin Requests", href: "/admin/admin-requests", icon: "🛡️" },
+    ] : []),
     { label: "Messages", href: "/admin/messages", icon: "📬" },
   ];
 

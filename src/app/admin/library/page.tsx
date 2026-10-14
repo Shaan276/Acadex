@@ -71,11 +71,11 @@ interface LibraryResource {
 }
 
 const RESOURCE_TYPES = [
-  { value: "notes", label: "📝 Notes" },
-  { value: "assignments", label: "📋 Assignments" },
-  { value: "practicals", label: "🧪 Practicals" },
-  { value: "oldyearpapers", label: "📄 Old Year Papers" },
-  { value: "reference", label: "📖 Reference" },
+  { value: "notes", label: "Notes" },
+  { value: "assignments", label: "Assignments" },
+  { value: "practicals", label: "Practicals" },
+  { value: "oldyearpapers", label: "Old Year Papers" },
+  { value: "reference", label: "Reference" },
 ] as const;
 
 const SEMESTERS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
@@ -96,6 +96,7 @@ export default function ManageLibraryPage() {
   const [filterSemester, setFilterSemester] = useState("");
   const [filterType, setFilterType] = useState("");
   const [filterYear, setFilterYear] = useState("");
+  const [filterSection, setFilterSection] = useState("");
 
   // Add form state
   const [showAddForm, setShowAddForm] = useState(false);
@@ -147,6 +148,7 @@ export default function ManageLibraryPage() {
       if (filterSemester) params.set("semester", filterSemester);
       if (filterType) params.set("type", filterType);
       if (filterYear) params.set("year", filterYear);
+      if (filterSection && filterSection !== "all") params.set("section", filterSection);
 
       const res = await fetch(`/api/library?${params.toString()}`);
       const data = await res.json();
@@ -190,7 +192,7 @@ export default function ManageLibraryPage() {
     const t = setTimeout(() => fetchResources(), 300);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterSearch, filterSemester, filterType, filterYear]);
+  }, [filterSearch, filterSemester, filterType, filterYear, filterSection]);
 
   /* ──── Add Resource ──── */
 
@@ -538,7 +540,7 @@ export default function ManageLibraryPage() {
       {/* Filters */}
       <Card className="rounded-2xl">
         <CardContent className="pt-6">
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <Input
               placeholder="Search title, description, tags…"
               value={filterSearch}
@@ -567,6 +569,19 @@ export default function ManageLibraryPage() {
                 {RESOURCE_TYPES.map((t) => (
                   <SelectItem key={t.value} value={t.value}>
                     {t.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={filterSection} onValueChange={setFilterSection}>
+              <SelectTrigger className="rounded-xl">
+                <SelectValue placeholder="All sections" />
+              </SelectTrigger>
+              <SelectContent className="rounded-xl">
+                <SelectItem value="all">All sections</SelectItem>
+                {sections.map((s) => (
+                  <SelectItem key={s._id} value={s._id}>
+                    {s.name}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -751,7 +766,7 @@ export default function ManageLibraryPage() {
         <Card className="rounded-2xl">
           <CardHeader className="pb-3">
             <CardTitle className="text-base font-semibold flex items-center gap-2">
-              📚 All Resources
+              All Resources
               <Badge variant="secondary" className="rounded-full text-xs">
                 {resources.length}
               </Badge>

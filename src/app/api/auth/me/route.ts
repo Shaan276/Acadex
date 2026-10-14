@@ -31,12 +31,24 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    // Detect if section or semester in JWT differs from DB — refresh token if so
+    // Detect if section, semester, or assignedSections in JWT differs from DB — refresh token if so
     const jwtSection = request.headers.get("x-user-section") || null;
     const dbSection = user.section ? user.section.toString() : null;
     const jwtSemester = request.headers.get("x-user-semester");
     const dbSemester = user.semester || null;
-    if (jwtSection !== dbSection || (jwtSemester ? Number(jwtSemester) : null) !== dbSemester) {
+
+    const jwtAssignedSectionsRaw = request.headers.get("x-user-assigned-sections");
+    const jwtAssignedSections: string[] = jwtAssignedSectionsRaw ? JSON.parse(jwtAssignedSectionsRaw) : [];
+    const dbAssignedSections: string[] = (user.assignedSections || []).map((s: unknown) => String(s));
+    const assignedChanged =
+      jwtAssignedSections.length !== dbAssignedSections.length ||
+      JSON.stringify([...jwtAssignedSections].sort()) !== JSON.stringify([...dbAssignedSections].sort());
+
+    if (
+      jwtSection !== dbSection ||
+      (jwtSemester ? Number(jwtSemester) : null) !== dbSemester ||
+      assignedChanged
+    ) {
       const token = signToken({
         userId: user._id.toString(),
         collegeId: user.college_id,
@@ -44,16 +56,16 @@ export async function GET(request: Request) {
         name: user.name,
         isSuperAdmin: user.isSuperAdmin || false,
         section: dbSection,
-        assignedSections: user.assignedSections?.map((s: unknown) => String(s)) || [],
+        assignedSections: dbAssignedSections,
         semester: dbSemester,
         isStudent: user.isStudent !== false,
       });
       await setAuthCookie(token);
     }
 
-    // Fetch stream and section in parallel when available.
+    // Fetch stream, section, and assignedSections in parallel when available.
     void Subject; // Ensure Subject model is registered for populate
-    const [stream, section] = await Promise.all([
+    const [stream, section, assignedSectionsDocs] = await Promise.all([
       user.stream
         ? Stream.findById(user.stream)
             .select("name subjects")
@@ -63,6 +75,11 @@ export async function GET(request: Request) {
       user.section
         ? Section.findById(user.section).select("name").lean()
         : Promise.resolve(null),
+      user.assignedSections && user.assignedSections.length > 0
+        ? Section.find({ _id: { $in: user.assignedSections } })
+            .select("_id name")
+            .lean()
+        : Promise.resolve([]),
     ]);
 
     const streamData = stream
@@ -80,6 +97,12 @@ export async function GET(request: Request) {
         }
       : null;
 
+    const assignedSectionsData = (assignedSectionsDocs || []).map((s) => ({
+      id: s._id.toString(),
+      _id: s._id.toString(),
+      name: s.name,
+    }));
+
     return NextResponse.json(
       {
         user: {
@@ -95,7 +118,7 @@ export async function GET(request: Request) {
           profileImageDriveId: user.profileImageDriveId || null,
           stream: streamData,
           section: sectionData,
-          assignedSections: user.assignedSections || [],
+          assignedSections: assignedSectionsData,
           semester: user.semester || null,
           must_change_password: user.must_change_password,
           theme: user.theme || "system",

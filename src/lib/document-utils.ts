@@ -88,7 +88,7 @@ export function detectMimeFromMagicBytes(bytes: Uint8Array): string | null {
 }
 
 /**
- * Known file extensions supported by @docmentis/udoc-viewer in Acadex:
+ * Known file extensions supported for preview and download in Acadex:
  * - PDF: .pdf
  * - Word: .docx, .doc
  * - PowerPoint: .pptx, .ppt

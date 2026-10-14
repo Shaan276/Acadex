@@ -137,6 +137,15 @@ export async function proxy(request: NextRequest) {
       }
       return NextResponse.redirect(new URL("/user/dashboard", request.url));
     }
+
+    // Super admin only routes: sections, subjects, streams management
+    const superAdminPages = ["/admin/sections", "/admin/subjects", "/admin/streams"];
+    const isSuperAdminRoute = superAdminPages.some(
+      (p) => pathname === p || pathname.startsWith(`${p}/`)
+    );
+    if (isSuperAdminRoute && !payload.isSuperAdmin) {
+      return NextResponse.redirect(new URL("/admin", request.url));
+    }
   }
 
   // Add user info to request headers for API routes

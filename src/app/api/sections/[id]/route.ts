@@ -1,8 +1,8 @@
 /**
  * @module API/Sections/[id]
  * @description Single section operations.
- * - PUT   → renames the section (super admin or admin with `isAdminSection`).
- * - DELETE → removes the section and reassigns related resources.
+ * - PUT    → renames the section (super admin only).
+ * - DELETE → removes the section and reassigns related resources (super admin only).
  */
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
@@ -12,33 +12,17 @@ import Note from "@/models/Note";
 import Assignment from "@/models/Assignment";
 import Practical from "@/models/Practical";
 import mongoose from "mongoose";
+import { requireSuperAdmin } from "@/lib/rbac";
 
-// PUT /api/sections/[id] — update section name (super admin or admin with isAdminSection)
+// PUT /api/sections/[id] — update section name (super admin only)
 export async function PUT(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-
-    if (userRole !== "admin") {
-      return NextResponse.json(
-        { error: "Only admins can manage sections" },
-        { status: 403 }
-      );
-    }
-
-    if (!isSuperAdmin) {
-      const userId = request.headers.get("x-user-id");
-      await connectDB();
-      const admin = await User.findById(userId).select("isAdminSection").lean();
-      if (!admin?.isAdminSection) {
-        return NextResponse.json(
-          { error: "You don't have permission to manage sections" },
-          { status: 403 }
-        );
-      }
+    const authResult = await requireSuperAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
     const { id } = await params;
@@ -87,32 +71,15 @@ export async function PUT(
   }
 }
 
-// DELETE /api/sections/[id] — delete section (super admin or admin with isAdminSection)
+// DELETE /api/sections/[id] — delete section (super admin only)
 export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-
-    if (userRole !== "admin") {
-      return NextResponse.json(
-        { error: "Only admins can manage sections" },
-        { status: 403 }
-      );
-    }
-
-    if (!isSuperAdmin) {
-      const userId = request.headers.get("x-user-id");
-      await connectDB();
-      const admin = await User.findById(userId).select("isAdminSection").lean();
-      if (!admin?.isAdminSection) {
-        return NextResponse.json(
-          { error: "You don't have permission to manage sections" },
-          { status: 403 }
-        );
-      }
+    const authResult = await requireSuperAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
     const { id } = await params;
@@ -128,7 +95,9 @@ export async function DELETE(
     }
 
     // Block deletion if users are assigned to this section
-    const userCount = await User.countDocuments({ section: id });
+    const userCount = await User.countDocuments({
+      $or: [{ section: id }, { assignedSections: id }],
+    });
     if (userCount > 0) {
       return NextResponse.json(
         {

@@ -1,18 +1,37 @@
 /**
  * @module API/Sections
  * @description Section management.
- * - GET  → lists all sections (public).
- * - POST → creates a new section (super admin or admin with `isAdminSection`).
+ * - GET  → lists sections (public/student/superadmin sees all; sub-admin sees only assigned sections).
+ * - POST → creates a new section (super admin only).
  */
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
 import Section from "@/models/Section";
-import User from "@/models/User";
+import { getAuthUser, requireSuperAdmin } from "@/lib/rbac";
 
-// GET /api/sections — list all sections (public for access request form + authenticated)
-export async function GET() {
+// GET /api/sections — list sections
+// Public/Students/Superadmins get all sections. Sub-admins get only their assigned sections.
+export async function GET(request: Request) {
   try {
     await connectDB();
+
+    const userRole = request.headers.get("x-user-role");
+    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
+
+    // Sub-admin section scoping
+    if (userRole === "admin" && !isSuperAdmin) {
+      const authUser = await getAuthUser(request);
+      if (authUser && authUser.effectiveSectionIds.length > 0) {
+        const sections = await Section.find({
+          _id: { $in: authUser.effectiveSectionIds },
+        })
+          .sort({ name: 1 })
+          .lean();
+        return NextResponse.json({ sections });
+      }
+      return NextResponse.json({ sections: [] });
+    }
+
     const sections = await Section.find().sort({ name: 1 }).lean();
     return NextResponse.json({ sections });
   } catch (error) {
@@ -24,29 +43,12 @@ export async function GET() {
   }
 }
 
-// POST /api/sections — create section (super admin or admin with isAdminSection)
+// POST /api/sections — create section (super admin only)
 export async function POST(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-
-    if (userRole !== "admin") {
-      return NextResponse.json(
-        { error: "Only admins can manage sections" },
-        { status: 403 }
-      );
-    }
-
-    if (!isSuperAdmin) {
-      const userId = request.headers.get("x-user-id");
-      await connectDB();
-      const admin = await User.findById(userId).select("isAdminSection").lean();
-      if (!admin?.isAdminSection) {
-        return NextResponse.json(
-          { error: "You don't have permission to manage sections" },
-          { status: 403 }
-        );
-      }
+    const authResult = await requireSuperAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
     const body = await request.json();

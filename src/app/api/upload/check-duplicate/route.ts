@@ -4,11 +4,12 @@
  */
 import { NextResponse } from "next/server";
 import { checkDuplicateFileInTarget } from "@/lib/gdrive";
+import { getAuthUser } from "@/lib/rbac";
 
 export async function POST(request: Request) {
   try {
-    const userId = request.headers.get("x-user-id");
-    if (!userId) {
+    const authUser = await getAuthUser(request);
+    if (!authUser) {
       return NextResponse.json(
         { error: "Unauthorized. Please log in." },
         { status: 401 }

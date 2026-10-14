@@ -1,10 +1,11 @@
 /**
  * @page AdminSubjects (/admin/subjects)
- * @description Admin CRUD for subjects (create, edit, delete with password confirmation).
+ * @description Superadmin CRUD for subjects (create, edit, delete with password confirmation) with search and stream assignment.
  */
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,6 +41,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Search, X } from "lucide-react";
 
 interface Subject {
   _id: string;
@@ -48,10 +50,21 @@ interface Subject {
   semester: number;
 }
 
+interface StreamItem {
+  _id: string;
+  name: string;
+  subjects: { _id: string; name: string }[];
+}
+
 export default function ManageSubjectsPage() {
+  const router = useRouter();
   const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [streams, setStreams] = useState<StreamItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+
+  // Search and filter states
+  const [searchQuery, setSearchQuery] = useState("");
+  const [semesterFilter, setSemesterFilter] = useState("all");
 
   // Add form state
   const [showAddForm, setShowAddForm] = useState(false);
@@ -59,11 +72,15 @@ export default function ManageSubjectsPage() {
   const [addName, setAddName] = useState("");
   const [addType, setAddType] = useState<"theory" | "practical">("theory");
   const [addSemester, setAddSemester] = useState("");
+  const [addStreamId, setAddStreamId] = useState("none");
 
-  // Edit semester state
+  // Edit state
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editSubject, setEditSubject] = useState<Subject | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editType, setEditType] = useState<"theory" | "practical">("theory");
   const [editSemester, setEditSemester] = useState("");
+  const [editStreamId, setEditStreamId] = useState("none");
   const [editLoading, setEditLoading] = useState(false);
 
   // Delete state
@@ -74,65 +91,92 @@ export default function ManageSubjectsPage() {
   const [showTheorySubjects, setShowTheorySubjects] = useState(true);
   const [showPracticalSubjects, setShowPracticalSubjects] = useState(true);
 
-  const fetchSubjects = async () => {
+  const fetchData = async () => {
     try {
-      const res = await fetch("/api/subjects");
-      const data = await res.json();
-      if (res.ok) setSubjects(data.subjects || []);
+      const [meRes, subjectsRes, streamsRes] = await Promise.all([
+        fetch("/api/auth/me"),
+        fetch("/api/subjects"),
+        fetch("/api/streams"),
+      ]);
+
+      const meData = await meRes.json();
+      if (!meData.user?.isSuperAdmin) {
+        toast.error("Superadmin access required");
+        router.replace("/admin");
+        return;
+      }
+
+      const subjectsData = await subjectsRes.json();
+      const streamsData = await streamsRes.json();
+
+      if (subjectsRes.ok) setSubjects(subjectsData.subjects || []);
+      if (streamsRes.ok) setStreams(streamsData.streams || []);
     } catch {
-      toast.error("Failed to fetch subjects");
+      toast.error("Failed to fetch data");
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchSubjects();
-    fetchCurrentUser();
+    fetchData();
   }, []);
 
-  const fetchCurrentUser = async () => {
-    try {
-      const res = await fetch("/api/auth/me");
-      const data = await res.json();
-      if (res.ok) setIsSuperAdmin(Boolean(data.user?.isSuperAdmin));
-    } catch {
-      setIsSuperAdmin(false);
+  // Map each subject to the streams it belongs to
+  const subjectStreamsMap = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    for (const stream of streams) {
+      for (const sub of stream.subjects || []) {
+        const subId = typeof sub === "object" ? sub._id : String(sub);
+        if (!map[subId]) map[subId] = [];
+        map[subId].push(stream.name);
+      }
     }
-  };
+    return map;
+  }, [streams]);
 
   const openEditDialog = (subject: Subject) => {
     setEditSubject(subject);
+    setEditName(subject.name);
+    setEditType(subject.type);
     setEditSemester(String(subject.semester));
+
+    // Find which stream it belongs to if any
+    const associatedStream = streams.find((str) =>
+      str.subjects?.some(
+        (s) => (typeof s === "object" ? s._id : String(s)) === subject._id
+      )
+    );
+    setEditStreamId(associatedStream ? associatedStream._id : "none");
     setEditDialogOpen(true);
   };
 
-  const handleEditSemester = async () => {
-    if (!editSubject || !editSemester) return;
+  const handleEditSubject = async () => {
+    if (!editSubject || !editSemester || !editName.trim()) return;
     setEditLoading(true);
 
     try {
       const res = await fetch(`/api/subjects/${editSubject._id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ semester: Number(editSemester) }),
+        body: JSON.stringify({
+          name: editName.trim(),
+          type: editType,
+          semester: Number(editSemester),
+          streamId: editStreamId !== "none" ? editStreamId : undefined,
+        }),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data.error || "Failed to update semester");
+        toast.error(data.error || "Failed to update subject");
         return;
       }
 
-      setSubjects((prev) =>
-        prev.map((s) =>
-          s._id === editSubject._id ? { ...s, semester: Number(editSemester) } : s
-        )
-      );
-      toast.success("Semester updated successfully");
+      toast.success("Subject updated successfully");
       setEditDialogOpen(false);
       setEditSubject(null);
-      setEditSemester("");
+      fetchData();
     } catch {
       toast.error("Something went wrong");
     } finally {
@@ -149,7 +193,12 @@ export default function ManageSubjectsPage() {
       const res = await fetch("/api/subjects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: addName.trim(), type: addType, semester: Number(addSemester) }),
+        body: JSON.stringify({
+          name: addName.trim(),
+          type: addType,
+          semester: Number(addSemester),
+          streamId: addStreamId !== "none" ? addStreamId : undefined,
+        }),
       });
 
       const data = await res.json();
@@ -163,8 +212,9 @@ export default function ManageSubjectsPage() {
       setAddName("");
       setAddType("theory");
       setAddSemester("");
+      setAddStreamId("none");
       setShowAddForm(false);
-      fetchSubjects();
+      fetchData();
     } catch {
       toast.error("Something went wrong. Please try again.");
     } finally {
@@ -209,6 +259,16 @@ export default function ManageSubjectsPage() {
     }
   };
 
+  const filteredSubjects = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    return subjects.filter((s) => {
+      const matchesSearch = !q || s.name.toLowerCase().includes(q);
+      const matchesSem =
+        semesterFilter === "all" || String(s.semester) === semesterFilter;
+      return matchesSearch && matchesSem;
+    });
+  }, [subjects, searchQuery, semesterFilter]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -216,6 +276,9 @@ export default function ManageSubjectsPage() {
       </div>
     );
   }
+
+  const theorySubjects = filteredSubjects.filter((s) => s.type !== "practical");
+  const practicalSubjects = filteredSubjects.filter((s) => s.type === "practical");
 
   return (
     <div className="space-y-6">
@@ -241,12 +304,12 @@ export default function ManageSubjectsPage() {
           <CardHeader>
             <CardTitle className="text-lg">New Subject</CardTitle>
             <CardDescription>
-              Add a new subject. Notes and assignments can then be linked to it.
+              Add a new subject and optionally assign it to an academic stream.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleAdd} className="space-y-4">
-              <div className="grid gap-4 sm:grid-cols-3">
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="space-y-2">
                   <Label htmlFor="addName">Subject Name</Label>
                   <Input
@@ -260,25 +323,53 @@ export default function ManageSubjectsPage() {
                 </div>
                 <div className="space-y-2">
                   <Label>Type</Label>
-                  <Select value={addType} onValueChange={(v) => setAddType(v as "theory" | "practical")}>
+                  <Select
+                    value={addType}
+                    onValueChange={(v) => setAddType(v as "theory" | "practical")}
+                  >
                     <SelectTrigger className="rounded-xl">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent className="rounded-xl">
-                      <SelectItem value="theory">📖 Theory</SelectItem>
-                      <SelectItem value="practical">🧪 Practical</SelectItem>
+                      <SelectItem value="theory">Theory</SelectItem>
+                      <SelectItem value="practical">Practical</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-2">
                   <Label>Semester</Label>
-                  <Select value={addSemester} onValueChange={setAddSemester} required>
+                  <Select
+                    value={addSemester}
+                    onValueChange={setAddSemester}
+                    required
+                  >
                     <SelectTrigger className="rounded-xl">
                       <SelectValue placeholder="Select semester" />
                     </SelectTrigger>
                     <SelectContent className="rounded-xl">
                       {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
-                        <SelectItem key={n} value={String(n)}>Semester {n}</SelectItem>
+                        <SelectItem key={n} value={String(n)}>
+                          Semester {n}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Assign to Stream</Label>
+                  <Select
+                    value={addStreamId}
+                    onValueChange={setAddStreamId}
+                  >
+                    <SelectTrigger className="rounded-xl">
+                      <SelectValue placeholder="Select stream (optional)" />
+                    </SelectTrigger>
+                    <SelectContent className="rounded-xl">
+                      <SelectItem value="none">None (General / Global)</SelectItem>
+                      {streams.map((str) => (
+                        <SelectItem key={str._id} value={str._id}>
+                          {str.name}
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -296,294 +387,374 @@ export default function ManageSubjectsPage() {
         </Card>
       )}
 
-      {/* Subjects Grouped by Type */}
-      {subjects.length === 0 ? (
+      {/* Search and Filters */}
+      <Card className="rounded-2xl">
+        <CardContent className="pt-5 pb-5">
+          <div className="flex flex-col sm:flex-row items-center gap-3">
+            <div className="relative flex-1 w-full">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search subject by name..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9 pr-8 rounded-xl text-sm"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <Select value={semesterFilter} onValueChange={setSemesterFilter}>
+                <SelectTrigger className="w-full sm:w-[160px] rounded-xl text-xs h-10">
+                  <SelectValue placeholder="All Semesters" />
+                </SelectTrigger>
+                <SelectContent className="rounded-xl">
+                  <SelectItem value="all">All Semesters</SelectItem>
+                  {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                    <SelectItem key={n} value={String(n)}>
+                      Semester {n}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Subjects Groups */}
+      {filteredSubjects.length === 0 ? (
         <Card className="rounded-2xl">
           <CardContent className="py-8">
             <p className="text-center text-muted-foreground">
-              No subjects yet. Click &ldquo;+ Add Subject&rdquo; above to get started.
+              {subjects.length === 0
+                ? "No subjects yet. Click \"+ Add Subject\" above to get started."
+                : "No subjects match your search."}
             </p>
           </CardContent>
         </Card>
       ) : (
-        <>
+        <div className="space-y-6">
           {/* Theory Subjects */}
-          {(() => {
-            const theorySubjects = subjects.filter(s => s.type !== "practical");
-            if (theorySubjects.length === 0) return null;
-            return (
-              <div>
-                <button
-                  type="button"
-                  className="w-full flex items-center gap-2 mb-3 text-left"
-                  onClick={() => setShowTheorySubjects((prev) => !prev)}
-                >
-                  <span className="text-base">📖</span>
-                  <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Theory</h3>
-                  <Badge variant="secondary" className="rounded-full text-xs">{theorySubjects.length}</Badge>
-                  <div className="flex-1 h-px bg-border" />
-                  <svg
-                    className={`h-4 w-4 text-muted-foreground transition-transform ${showTheorySubjects ? "rotate-180" : ""}`}
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-                {showTheorySubjects && (
-                  <Card className="rounded-2xl">
-                    <CardContent className="pt-4">
+          {theorySubjects.length > 0 && (
+            <div>
+              <button
+                type="button"
+                className="w-full flex items-center gap-2 mb-3 text-left"
+                onClick={() => setShowTheorySubjects((prev) => !prev)}
+              >
+                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+                  Theory Subjects
+                </h3>
+                <Badge variant="secondary" className="rounded-full text-xs">
+                  {theorySubjects.length}
+                </Badge>
+                <div className="flex-1 h-px bg-border" />
+              </button>
+              {showTheorySubjects && (
+                <Card className="rounded-2xl">
+                  <CardContent className="pt-4">
                     <div className="overflow-x-auto">
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead>#</TableHead>
+                            <TableHead className="w-12">#</TableHead>
                             <TableHead>Subject Name</TableHead>
                             <TableHead>Semester</TableHead>
-                            <TableHead>Type</TableHead>
+                            <TableHead>Associated Streams</TableHead>
                             <TableHead className="text-right">Actions</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {theorySubjects.map((subject, index) => (
-                            <TableRow key={subject._id}>
-                              <TableCell className="text-muted-foreground">{index + 1}</TableCell>
-                              <TableCell>
-                                <Badge variant="secondary" className="rounded-full text-sm px-3 py-1">
-                                  📚 {subject.name}
-                                </Badge>
-                              </TableCell>
-                              <TableCell>
-                                <Badge variant="outline" className="rounded-full text-xs">
-                                  Sem {subject.semester}
-                                </Badge>
-                              </TableCell>
-                              <TableCell>
-                                <button
-                                  onClick={async () => {
-                                    const newType = "practical";
-                                    try {
-                                      const res = await fetch(`/api/subjects/${subject._id}`, {
-                                        method: "PUT",
-                                        headers: { "Content-Type": "application/json" },
-                                        body: JSON.stringify({ type: newType }),
-                                      });
-                                      if (res.ok) {
-                                        setSubjects(subjects.map(s =>
-                                          s._id === subject._id ? { ...s, type: newType } : s
-                                        ));
-                                        toast.success(`Changed to ${newType}`);
-                                      }
-                                    } catch { toast.error("Failed to update type"); }
-                                  }}
-                                  className="text-xs"
-                                >
-                                  <Badge variant="outline" className="rounded-full cursor-pointer hover:opacity-80 transition-opacity">
-                                    📖 Theory
+                          {theorySubjects.map((subject, index) => {
+                            const streamNames = subjectStreamsMap[subject._id] || [];
+                            return (
+                              <TableRow key={subject._id}>
+                                <TableCell className="text-muted-foreground text-xs font-mono">
+                                  {index + 1}
+                                </TableCell>
+                                <TableCell className="font-medium">
+                                  <Badge
+                                    variant="secondary"
+                                    className="rounded-full text-xs px-2.5 py-0.5"
+                                  >
+                                    {subject.name}
                                   </Badge>
-                                </button>
-                              </TableCell>
-                              <TableCell className="text-right">
-                                <div className="flex items-center justify-end gap-2">
-                                  {isSuperAdmin && (
-                                    <Button variant="outline" size="sm" className="rounded-lg" onClick={() => openEditDialog(subject)}>
-                                      Edit Semester
-                                    </Button>
+                                </TableCell>
+                                <TableCell>
+                                  <Badge
+                                    variant="outline"
+                                    className="rounded-full text-xs"
+                                  >
+                                    Semester {subject.semester}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell>
+                                  {streamNames.length > 0 ? (
+                                    <div className="flex flex-wrap gap-1">
+                                      {streamNames.map((sName) => (
+                                        <Badge
+                                          key={sName}
+                                          variant="outline"
+                                          className="text-[11px] rounded-full"
+                                        >
+                                          {sName}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <span className="text-xs text-muted-foreground">
+                                      General
+                                    </span>
                                   )}
-                                  <Button variant="destructive" size="sm" className="rounded-lg" onClick={() => openDeleteDialog(subject)}>
+                                </TableCell>
+                                <TableCell className="text-right space-x-2">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="rounded-lg text-xs"
+                                    onClick={() => openEditDialog(subject)}
+                                  >
+                                    Edit
+                                  </Button>
+                                  <Button
+                                    variant="destructive"
+                                    size="sm"
+                                    className="rounded-lg text-xs"
+                                    onClick={() => openDeleteDialog(subject)}
+                                  >
                                     Delete
                                   </Button>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          ))}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
                         </TableBody>
                       </Table>
                     </div>
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
-            );
-          })()}
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          )}
 
-          {/* Practical/Lab Subjects */}
-          {(() => {
-            const practicalSubjects = subjects.filter(s => s.type === "practical");
-            if (practicalSubjects.length === 0) return null;
-            return (
-              <div>
-                <button
-                  type="button"
-                  className="w-full flex items-center gap-2 mb-3 text-left"
-                  onClick={() => setShowPracticalSubjects((prev) => !prev)}
-                >
-                  <span className="text-base">🧪</span>
-                  <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Practical / Lab</h3>
-                  <Badge variant="secondary" className="rounded-full text-xs">{practicalSubjects.length}</Badge>
-                  <div className="flex-1 h-px bg-border" />
-                  <svg
-                    className={`h-4 w-4 text-muted-foreground transition-transform ${showPracticalSubjects ? "rotate-180" : ""}`}
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-                {showPracticalSubjects && (
-                  <Card className="rounded-2xl">
-                    <CardContent className="pt-4">
+          {/* Practical Subjects */}
+          {practicalSubjects.length > 0 && (
+            <div>
+              <button
+                type="button"
+                className="w-full flex items-center gap-2 mb-3 text-left"
+                onClick={() => setShowPracticalSubjects((prev) => !prev)}
+              >
+                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+                  Practical Subjects
+                </h3>
+                <Badge variant="secondary" className="rounded-full text-xs">
+                  {practicalSubjects.length}
+                </Badge>
+                <div className="flex-1 h-px bg-border" />
+              </button>
+              {showPracticalSubjects && (
+                <Card className="rounded-2xl">
+                  <CardContent className="pt-4">
                     <div className="overflow-x-auto">
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead>#</TableHead>
+                            <TableHead className="w-12">#</TableHead>
                             <TableHead>Subject Name</TableHead>
                             <TableHead>Semester</TableHead>
-                            <TableHead>Type</TableHead>
+                            <TableHead>Associated Streams</TableHead>
                             <TableHead className="text-right">Actions</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {practicalSubjects.map((subject, index) => (
-                            <TableRow key={subject._id}>
-                              <TableCell className="text-muted-foreground">{index + 1}</TableCell>
-                              <TableCell>
-                                <Badge variant="secondary" className="rounded-full text-sm px-3 py-1">
-                                  🧪 {subject.name}
-                                </Badge>
-                              </TableCell>
-                              <TableCell>
-                                <Badge variant="outline" className="rounded-full text-xs">
-                                  Sem {subject.semester}
-                                </Badge>
-                              </TableCell>
-                              <TableCell>
-                                <button
-                                  onClick={async () => {
-                                    const newType = "theory";
-                                    try {
-                                      const res = await fetch(`/api/subjects/${subject._id}`, {
-                                        method: "PUT",
-                                        headers: { "Content-Type": "application/json" },
-                                        body: JSON.stringify({ type: newType }),
-                                      });
-                                      if (res.ok) {
-                                        setSubjects(subjects.map(s =>
-                                          s._id === subject._id ? { ...s, type: newType } : s
-                                        ));
-                                        toast.success(`Changed to ${newType}`);
-                                      }
-                                    } catch { toast.error("Failed to update type"); }
-                                  }}
-                                  className="text-xs"
-                                >
-                                  <Badge variant="default" className="rounded-full cursor-pointer hover:opacity-80 transition-opacity">
-                                    🧪 Practical
+                          {practicalSubjects.map((subject, index) => {
+                            const streamNames = subjectStreamsMap[subject._id] || [];
+                            return (
+                              <TableRow key={subject._id}>
+                                <TableCell className="text-muted-foreground text-xs font-mono">
+                                  {index + 1}
+                                </TableCell>
+                                <TableCell className="font-medium">
+                                  <Badge
+                                    variant="secondary"
+                                    className="rounded-full text-xs px-2.5 py-0.5"
+                                  >
+                                    {subject.name}
                                   </Badge>
-                                </button>
-                              </TableCell>
-                              <TableCell className="text-right">
-                                <div className="flex items-center justify-end gap-2">
-                                  {isSuperAdmin && (
-                                    <Button variant="outline" size="sm" className="rounded-lg" onClick={() => openEditDialog(subject)}>
-                                      Edit Semester
-                                    </Button>
+                                </TableCell>
+                                <TableCell>
+                                  <Badge
+                                    variant="outline"
+                                    className="rounded-full text-xs"
+                                  >
+                                    Semester {subject.semester}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell>
+                                  {streamNames.length > 0 ? (
+                                    <div className="flex flex-wrap gap-1">
+                                      {streamNames.map((sName) => (
+                                        <Badge
+                                          key={sName}
+                                          variant="outline"
+                                          className="text-[11px] rounded-full"
+                                        >
+                                          {sName}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <span className="text-xs text-muted-foreground">
+                                      General
+                                    </span>
                                   )}
-                                  <Button variant="destructive" size="sm" className="rounded-lg" onClick={() => openDeleteDialog(subject)}>
+                                </TableCell>
+                                <TableCell className="text-right space-x-2">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="rounded-lg text-xs"
+                                    onClick={() => openEditDialog(subject)}
+                                  >
+                                    Edit
+                                  </Button>
+                                  <Button
+                                    variant="destructive"
+                                    size="sm"
+                                    className="rounded-lg text-xs"
+                                    onClick={() => openDeleteDialog(subject)}
+                                  >
                                     Delete
                                   </Button>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          ))}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
                         </TableBody>
                       </Table>
                     </div>
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
-            );
-          })()}
-        </>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          )}
+        </div>
       )}
 
-      {/* Delete Confirmation Dialog with Password */}
+      {/* Edit Subject Dialog */}
       <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="rounded-2xl">
+        <DialogContent className="rounded-2xl max-w-md">
           <DialogHeader>
-            <DialogTitle>Edit Subject Semester</DialogTitle>
+            <DialogTitle>Edit Subject</DialogTitle>
             <DialogDescription>
-              Update semester for &ldquo;{editSubject?.name}&rdquo;.
+              Update the subject details, type, semester, or associated stream.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2 py-2">
-            <Label>Semester</Label>
-            <Select value={editSemester} onValueChange={setEditSemester}>
-              <SelectTrigger className="rounded-xl">
-                <SelectValue placeholder="Select semester" />
-              </SelectTrigger>
-              <SelectContent className="rounded-xl">
-                {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
-                  <SelectItem key={n} value={String(n)}>
-                    Semester {n}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="editName">Subject Name</Label>
+              <Input
+                id="editName"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                className="rounded-xl"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Type</Label>
+              <Select
+                value={editType}
+                onValueChange={(v) => setEditType(v as "theory" | "practical")}
+              >
+                <SelectTrigger className="rounded-xl">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="rounded-xl">
+                  <SelectItem value="theory">Theory</SelectItem>
+                  <SelectItem value="practical">Practical</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Semester</Label>
+              <Select value={editSemester} onValueChange={setEditSemester}>
+                <SelectTrigger className="rounded-xl">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="rounded-xl">
+                  {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                    <SelectItem key={n} value={String(n)}>
+                      Semester {n}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Associated Stream</Label>
+              <Select value={editStreamId} onValueChange={setEditStreamId}>
+                <SelectTrigger className="rounded-xl">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="rounded-xl">
+                  <SelectItem value="none">None (General / Global)</SelectItem>
+                  {streams.map((str) => (
+                    <SelectItem key={str._id} value={str._id}>
+                      {str.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" className="rounded-xl" onClick={() => setEditDialogOpen(false)}>
+            <Button
+              variant="outline"
+              className="rounded-xl"
+              onClick={() => setEditDialogOpen(false)}
+            >
               Cancel
             </Button>
             <Button
               className="rounded-xl bg-primary text-primary-foreground hover:bg-primary/90"
-              onClick={handleEditSemester}
-              disabled={editLoading || !editSemester}
+              onClick={handleEditSubject}
+              disabled={editLoading || !editName.trim() || !editSemester}
             >
-              {editLoading ? "Saving..." : "Save"}
+              {editLoading ? "Saving..." : "Save Changes"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirmation Dialog with Password */}
+      {/* Delete Subject Dialog */}
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <DialogContent className="rounded-2xl">
+        <DialogContent className="rounded-2xl max-w-md">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <svg className="h-5 w-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-              </svg>
-              Delete Subject
-            </DialogTitle>
+            <DialogTitle>Delete Subject</DialogTitle>
             <DialogDescription>
-              You are about to delete &ldquo;{deleteSubject?.name}&rdquo;.
-              This will only work if the subject has no notes or assignments linked to it.
-              <br />
-              <span className="font-semibold text-red-500 dark:text-red-400">
-                Enter your admin password to confirm this action.
-              </span>
+              Are you sure you want to delete &ldquo;{deleteSubject?.name}&rdquo;?
+              This action cannot be undone. Enter your admin password to confirm.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3 py-2">
-            <div className="space-y-2">
-              <Label htmlFor="deletePassword">Admin Password</Label>
-              <Input
-                id="deletePassword"
-                type="password"
-                placeholder="Enter your password"
-                value={deletePassword}
-                onChange={(e) => setDeletePassword(e.target.value)}
-                className="rounded-xl"
-                autoComplete="current-password"
-              />
-            </div>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="deletePassword">Admin Password</Label>
+            <Input
+              id="deletePassword"
+              type="password"
+              placeholder="Enter your password"
+              value={deletePassword}
+              onChange={(e) => setDeletePassword(e.target.value)}
+              className="rounded-xl"
+            />
           </div>
           <DialogFooter>
             <Button

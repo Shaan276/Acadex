@@ -16,6 +16,7 @@ import Notification from "@/models/Notification";
 import { practicalUploadedPayload } from "@/lib/push/payloads";
 import { sendPushToUsers } from "@/lib/push/send";
 import { resolveStudentUserIdsForSubject } from "@/lib/push/targets";
+import { getAuthUser, requireAdmin, canAdminManageSection } from "@/lib/rbac";
 
 // GET /api/practicals - List practicals (optionally filter by subject and/or section)
 export async function GET(request: Request) {
@@ -110,12 +111,8 @@ export async function GET(request: Request) {
       }
     }
 
-    const assignedSectionsRaw = request.headers.get("x-user-assigned-sections");
-    const assignedSections = assignedSectionsRaw ? JSON.parse(assignedSectionsRaw) : [];
-    
-    let allowedSections: string[] = [];
-    if (userSection) allowedSections.push(userSection);
-    allowedSections = Array.from(new Set([...allowedSections, ...assignedSections]));
+    const authUser = await getAuthUser(request);
+    const allowedSections: string[] = authUser ? authUser.effectiveSectionIds : [];
 
     if (userRole === "admin" && !isSuperAdmin) {
       // M-02: Prevent section=all bypass for sub-admins
@@ -130,6 +127,8 @@ export async function GET(request: Request) {
           { section: { $in: allowedSections } },
           { sections: { $in: allowedSections } }
         ];
+      } else {
+        return NextResponse.json({ practicals: [] });
       }
     } else if (sectionParam && sectionParam !== "all") {
       filter.$or = [{ section: sectionParam }, { sections: sectionParam }];
@@ -177,15 +176,12 @@ export async function GET(request: Request) {
 // POST /api/practicals - Add a practical (admin only)
 export async function POST(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const adminId = request.headers.get("x-user-id");
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    const adminSection = request.headers.get("x-user-section");
-
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    const authResult = await requireAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
+    const { authUser } = authResult;
     const body = await request.json();
 
     const parsed = addPracticalSchema.safeParse(body);
@@ -196,12 +192,41 @@ export async function POST(request: Request) {
       );
     }
 
+    await connectDB();
+    void Subject;
+    void Section;
+
+    // Validate that the subject exists
+    const subjectExists = await Subject.findById(parsed.data.subject);
+    if (!subjectExists) {
+      return NextResponse.json(
+        { error: "Selected subject does not exist" },
+        { status: 400 }
+      );
+    }
+
     let sectionId = parsed.data.section || null;
     let sectionsIds = parsed.data.sections || [];
-    if (!isSuperAdmin) {
-      if (adminSection && sectionsIds.length === 0 && !sectionId) {
-        sectionId = adminSection;
-        sectionsIds = [adminSection];
+
+    if (!authUser.isSuperAdmin) {
+      // If neither section nor sections provided, default to user's first assigned section
+      if (!sectionId && sectionsIds.length === 0) {
+        sectionId = authUser.section || authUser.effectiveSectionIds[0] || null;
+        if (sectionId) sectionsIds = [sectionId];
+      }
+
+      // Check all specified sections against admin's assigned sections
+      const allTargetSections = Array.from(
+        new Set([sectionId, ...sectionsIds].filter(Boolean))
+      ) as string[];
+
+      for (const sId of allTargetSections) {
+        if (!canAdminManageSection(authUser, sId)) {
+          return NextResponse.json(
+            { error: "You cannot add practicals to a section you are not assigned to" },
+            { status: 403 }
+          );
+        }
       }
     } else {
       if (sectionId && sectionsIds.length === 0) {
@@ -209,9 +234,16 @@ export async function POST(request: Request) {
       }
     }
 
-    await connectDB();
-    void Subject;
-    void Section;
+    // Ensure valid section in Section collection if provided
+    if (sectionId) {
+      const secDoc = await Section.findById(sectionId);
+      if (!secDoc) {
+        return NextResponse.json(
+          { error: "Selected section does not exist" },
+          { status: 400 }
+        );
+      }
+    }
 
     const practical = await Practical.create({
       subject: parsed.data.subject,
@@ -221,7 +253,7 @@ export async function POST(request: Request) {
       deadline: parsed.data.deadline ? new Date(parsed.data.deadline) : null,
       section: sectionId,
       sections: sectionsIds,
-      uploadedBy: adminId,
+      uploadedBy: authUser.userId,
     });
 
     const populated = await practical.populate([
@@ -232,7 +264,7 @@ export async function POST(request: Request) {
 
     // Log activity
     await ActivityLog.create({
-      user: adminId!,
+      user: authUser.userId,
       action: "PRACTICAL_ADDED",
       details: `Added practical: ${parsed.data.title}`,
       section: sectionId || null,

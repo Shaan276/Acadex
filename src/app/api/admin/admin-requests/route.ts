@@ -16,6 +16,8 @@ import Section from "@/models/Section";
 import ActivityLog from "@/models/ActivityLog";
 import Notification from "@/models/Notification";
 
+import { requireAdmin, requireSuperAdmin } from "@/lib/rbac";
+
 // Ensure models are registered for populate
 void Stream;
 void Section;
@@ -24,20 +26,15 @@ void Section;
 // Super admin: all requests. Sub-admin: only their own.
 export async function GET(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    const isSuperAdmin =
-      request.headers.get("x-user-is-super-admin") === "true";
-    const adminId = request.headers.get("x-user-id");
+    const authResult = await requireAdmin(request);
+    if (authResult.response) return authResult.response;
+    const { authUser } = authResult;
 
     await connectDB();
 
     const filter: Record<string, unknown> = {};
-    if (!isSuperAdmin) {
-      filter.requestedBy = adminId;
+    if (!authUser.isSuperAdmin) {
+      filter.requestedBy = authUser.userId;
     }
 
     const requests = await AdminRequest.find(filter)
@@ -117,17 +114,9 @@ export async function GET(request: Request) {
 // PATCH /api/admin/admin-requests — Approve or deny (super admin only)
 export async function PATCH(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const isSuperAdmin =
-      request.headers.get("x-user-is-super-admin") === "true";
-    const adminId = request.headers.get("x-user-id");
-
-    if (userRole !== "admin" || !isSuperAdmin) {
-      return NextResponse.json(
-        { error: "Only super admin can approve/deny admin requests" },
-        { status: 403 }
-      );
-    }
+    const authResult = await requireSuperAdmin(request);
+    if (authResult.response) return authResult.response;
+    const { authUser } = authResult;
 
     const body = await request.json();
     const { requestId, action, admin_note } = body;
@@ -201,7 +190,7 @@ export async function PATCH(request: Request) {
         });
 
         await ActivityLog.create({
-          user: adminId!,
+          user: authUser.userId,
           action: "ADMIN_REQUEST_APPROVED",
           details: `Approved admin creation: ${data.name} (${data.college_id})`,
           section: (data.section as string) || null,
@@ -246,7 +235,7 @@ export async function PATCH(request: Request) {
         await user.save();
 
         await ActivityLog.create({
-          user: adminId!,
+          user: authUser.userId,
           action: "ADMIN_REQUEST_APPROVED",
           details: `Approved section/stream change for ${user.name} (${user.college_id})`,
           section: (data.newSection as string) || user.section || null,
@@ -277,7 +266,7 @@ export async function PATCH(request: Request) {
       await adminReq.save();
 
       await ActivityLog.create({
-        user: adminId!,
+        user: authUser.userId,
         action: "ADMIN_REQUEST_DENIED",
         details: `Denied admin request: ${adminReq.type} by ${adminReq.requestedBy}`,
         section: (data.section as string) || (data.newSection as string) || null,
@@ -314,16 +303,9 @@ export async function PATCH(request: Request) {
 // DELETE /api/admin/admin-requests — Delete a request (super admin only)
 export async function DELETE(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const isSuperAdmin =
-      request.headers.get("x-user-is-super-admin") === "true";
-
-    if (userRole !== "admin" || !isSuperAdmin) {
-      return NextResponse.json(
-        { error: "Only super admin can delete admin requests" },
-        { status: 403 }
-      );
-    }
+    const authResult = await requireSuperAdmin(request);
+    if (authResult.response) return authResult.response;
+    const { authUser } = authResult;
 
     const { searchParams } = new URL(request.url);
     const mode = searchParams.get("mode");

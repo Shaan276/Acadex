@@ -9,9 +9,11 @@ import { connectDB } from "@/lib/db";
 import { addLibraryResourceSchema } from "@/lib/validations";
 import LibraryResource from "@/models/LibraryResource";
 import Section from "@/models/Section";
+import Subject from "@/models/Subject";
 import User from "@/models/User";
 import ActivityLog from "@/models/ActivityLog";
 import Notification from "@/models/Notification";
+import { getAuthUser, requireAdmin, canAdminManageSection } from "@/lib/rbac";
 
 // GET /api/library - List library resources with optional filters
 export async function GET(request: Request) {
@@ -41,12 +43,8 @@ export async function GET(request: Request) {
     if (resourceType) filter.resourceType = resourceType;
     if (academicYear) filter.academicYear = academicYear;
 
-    const assignedSectionsRaw = request.headers.get("x-user-assigned-sections");
-    const assignedSections = assignedSectionsRaw ? JSON.parse(assignedSectionsRaw) : [];
-    
-    let allowedSections: string[] = [];
-    if (userSection) allowedSections.push(userSection);
-    allowedSections = Array.from(new Set([...allowedSections, ...assignedSections]));
+    const authUser = await getAuthUser(request);
+    const allowedSections: string[] = authUser ? authUser.effectiveSectionIds : [];
 
     // Section filtering
     let sectionFilterOr: Record<string, any>[] | null = null;
@@ -63,6 +61,8 @@ export async function GET(request: Request) {
           { section: { $in: allowedSections } },
           { sections: { $in: allowedSections } }
         ];
+      } else {
+        return NextResponse.json({ resources: [] });
       }
     } else if (sectionParam && sectionParam !== "all") {
       sectionFilterOr = [{ section: sectionParam }, { sections: sectionParam }];
@@ -127,16 +127,12 @@ export async function GET(request: Request) {
 // POST /api/library - Add a library resource (admin only)
 export async function POST(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const adminId = request.headers.get("x-user-id");
-    const isSuperAdmin =
-      request.headers.get("x-user-is-super-admin") === "true";
-    const adminSection = request.headers.get("x-user-section");
-
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    const authResult = await requireAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
+    const { authUser } = authResult;
     const body = await request.json();
 
     const parsed = addLibraryResourceSchema.safeParse(body);
@@ -147,12 +143,40 @@ export async function POST(request: Request) {
       );
     }
 
+    await connectDB();
+    void Section;
+
+    // Validate that the subject exists
+    const subjectExists = await Subject.findById(parsed.data.subject);
+    if (!subjectExists) {
+      return NextResponse.json(
+        { error: "Selected subject does not exist" },
+        { status: 400 }
+      );
+    }
+
     let sectionId = parsed.data.section || null;
     let sectionsIds = parsed.data.sections || [];
-    if (!isSuperAdmin) {
-      if (adminSection && sectionsIds.length === 0 && !sectionId) {
-        sectionId = adminSection;
-        sectionsIds = [adminSection];
+
+    if (!authUser.isSuperAdmin) {
+      // If neither section nor sections provided, default to user's first assigned section
+      if (!sectionId && sectionsIds.length === 0) {
+        sectionId = authUser.section || authUser.effectiveSectionIds[0] || null;
+        if (sectionId) sectionsIds = [sectionId];
+      }
+
+      // Check all specified sections against admin's assigned sections
+      const allTargetSections = Array.from(
+        new Set([sectionId, ...sectionsIds].filter(Boolean))
+      ) as string[];
+
+      for (const sId of allTargetSections) {
+        if (!canAdminManageSection(authUser, sId)) {
+          return NextResponse.json(
+            { error: "You cannot add library resources to a section you are not assigned to" },
+            { status: 403 }
+          );
+        }
       }
     } else {
       if (sectionId && sectionsIds.length === 0) {
@@ -160,8 +184,16 @@ export async function POST(request: Request) {
       }
     }
 
-    await connectDB();
-    void Section;
+    // Ensure valid section in Section collection if provided
+    if (sectionId) {
+      const secDoc = await Section.findById(sectionId);
+      if (!secDoc) {
+        return NextResponse.json(
+          { error: "Selected section does not exist" },
+          { status: 400 }
+        );
+      }
+    }
 
     const resource = await LibraryResource.create({
       title: parsed.data.title,
@@ -174,7 +206,7 @@ export async function POST(request: Request) {
       fileUrl: parsed.data.fileUrl,
       section: sectionId,
       sections: sectionsIds,
-      uploadedBy: adminId,
+      uploadedBy: authUser.userId,
     });
 
     const populated = await resource.populate([
@@ -186,7 +218,7 @@ export async function POST(request: Request) {
     // Activity log
     try {
       await ActivityLog.create({
-        user: adminId!,
+        user: authUser.userId,
         action: "add_library_resource",
         details: `Added library resource: ${parsed.data.title}`,
       });

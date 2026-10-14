@@ -1,16 +1,24 @@
 /**
  * @module API/Library/[id]
  * @description Single library resource operations.
- * - GET   → fetches one resource by ID.
- * - PUT   → updates the resource (admin only).
- * - DELETE → removes the resource (admin only).
+ * - GET    → fetches one resource by ID.
+ * - PUT    → updates the resource (admin with section permission).
+ * - DELETE → removes the resource (admin with section permission).
  */
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
 import LibraryResource from "@/models/LibraryResource";
 import Section from "@/models/Section";
+import Subject from "@/models/Subject";
 import User from "@/models/User";
 import ActivityLog from "@/models/ActivityLog";
+import { requireAdmin, canAdminManageResource } from "@/lib/rbac";
+
+const populateFields = [
+  { path: "subject", select: "name type" },
+  { path: "section", select: "name" },
+  { path: "uploadedBy", select: "name" },
+];
 
 // GET /api/library/[id]
 export async function GET(
@@ -23,10 +31,7 @@ export async function GET(
     void Section;
     void User;
 
-    const resource = await LibraryResource.findById(id)
-      .populate("subject", "name type")
-      .populate("section", "name")
-      .populate("uploadedBy", "name");
+    const resource = await LibraryResource.findById(id).populate(populateFields);
 
     if (!resource) {
       return NextResponse.json(
@@ -51,13 +56,12 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const adminId = request.headers.get("x-user-id");
-
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    const authResult = await requireAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
+    const { authUser } = authResult;
     const { id } = await params;
     const body = await request.json();
 
@@ -73,17 +77,50 @@ export async function PUT(
       );
     }
 
+    // Determine target section if being modified
+    const targetSection =
+      body.section !== undefined ? (body.section || null) : undefined;
+
+    // Check permissions on origin and destination sections
+    if (!canAdminManageResource(authUser, resource.section?.toString(), targetSection)) {
+      return NextResponse.json(
+        { error: "You do not have permission to manage library resources in this section" },
+        { status: 403 }
+      );
+    }
+
+    // Validate subject if provided
+    if (body.subject !== undefined) {
+      const subjectExists = await Subject.findById(body.subject);
+      if (!subjectExists) {
+        return NextResponse.json(
+          { error: "Selected subject does not exist" },
+          { status: 400 }
+        );
+      }
+      resource.subject = body.subject;
+    }
+
+    // Validate destination section in DB if provided
+    if (targetSection) {
+      const sectionExists = await Section.findById(targetSection);
+      if (!sectionExists) {
+        return NextResponse.json(
+          { error: "Selected section does not exist" },
+          { status: 400 }
+        );
+      }
+    }
+
     // Update allowed fields
     const allowedFields = [
       "title",
       "description",
-      "subject",
       "semester",
       "academicYear",
       "resourceType",
       "tags",
       "fileUrl",
-      "section",
     ];
     for (const field of allowedFields) {
       if (body[field] !== undefined) {
@@ -91,20 +128,20 @@ export async function PUT(
         (resource as any)[field] = body[field];
       }
     }
+    if (body.section !== undefined) {
+      resource.section = body.section || null;
+    }
 
     await resource.save();
 
-    const populated = await resource.populate([
-      { path: "subject", select: "name type" },
-      { path: "section", select: "name" },
-      { path: "uploadedBy", select: "name" },
-    ]);
+    const populated = await resource.populate(populateFields);
 
     try {
       await ActivityLog.create({
-        user: adminId!,
+        user: authUser.userId,
         action: "update_library_resource",
         details: `Updated library resource: ${resource.title}`,
+        section: resource.section || null,
       });
     } catch {
       /* non-critical */
@@ -126,18 +163,17 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const adminId = request.headers.get("x-user-id");
-
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    const authResult = await requireAdmin(request);
+    if (authResult.response) {
+      return authResult.response;
     }
 
+    const { authUser } = authResult;
     const { id } = await params;
 
     await connectDB();
 
-    const resource = await LibraryResource.findByIdAndDelete(id);
+    const resource = await LibraryResource.findById(id);
     if (!resource) {
       return NextResponse.json(
         { error: "Resource not found" },
@@ -145,11 +181,22 @@ export async function DELETE(
       );
     }
 
+    // Check permission on resource's section
+    if (!canAdminManageResource(authUser, resource.section?.toString())) {
+      return NextResponse.json(
+        { error: "You do not have permission to delete library resources from this section" },
+        { status: 403 }
+      );
+    }
+
+    await LibraryResource.findByIdAndDelete(id);
+
     try {
       await ActivityLog.create({
-        user: adminId!,
+        user: authUser.userId,
         action: "delete_library_resource",
         details: `Deleted library resource: ${resource.title}`,
+        section: resource.section || null,
       });
     } catch {
       /* non-critical */

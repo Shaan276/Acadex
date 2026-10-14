@@ -6,24 +6,21 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
 import ActivityLog from "@/models/ActivityLog";
+import { requireAdmin } from "@/lib/rbac";
 
 // GET /api/admin/activity — Fetch recent activity log entries
 export async function GET(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    const adminSection = request.headers.get("x-user-section");
+    const authResult = await requireAdmin(request);
+    if (authResult.response) return authResult.response;
+    const { authUser } = authResult;
 
     await connectDB();
 
-    // Sub-admins only see activity from their own section
+    // Sub-admins only see activity from their own assigned sections
     const filter: Record<string, unknown> = {};
-    if (!isSuperAdmin && adminSection) {
-      filter.section = adminSection;
+    if (!authUser.isSuperAdmin) {
+      filter.section = { $in: authUser.effectiveSectionIds };
     }
 
     const activities = await ActivityLog.find(filter)

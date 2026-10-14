@@ -12,16 +12,16 @@ import { resolveUserIdsForAudience } from "@/lib/push/targets";
 
 type AudienceType = "all" | "semester" | "section" | "users";
 
+import mongoose from "mongoose";
+import User from "@/models/User";
+import { requireAdmin, canAdminManageSection } from "@/lib/rbac";
+
 // POST /api/admin/send-notification — Send notification to individual user
 export async function POST(request: Request) {
   try {
-    const userRole = request.headers.get("x-user-role");
-    const isSuperAdmin = request.headers.get("x-user-is-super-admin") === "true";
-    const adminSection = request.headers.get("x-user-section");
-
-    if (userRole !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
+    const authResult = await requireAdmin(request);
+    if (authResult.response) return authResult.response;
+    const { authUser } = authResult;
 
     const body = await request.json();
     const {
@@ -56,12 +56,20 @@ export async function POST(request: Request) {
 
     let targetUserIds: string[] = [];
     if (audience === "all") {
-      // M-03: If not super admin, sending to "all" should actually just send to their own section.
-      if (!isSuperAdmin && adminSection) {
-        targetUserIds = await resolveUserIdsForAudience({
-          targetType: "section",
-          sectionId: adminSection,
-        });
+      // Sub-admins broadcasting to "all" only broadcasts to their assigned section(s)
+      if (!authUser.isSuperAdmin) {
+        if (authUser.effectiveSectionIds.length === 0) {
+          return NextResponse.json(
+            { error: "You have no assigned sections to notify." },
+            { status: 403 }
+          );
+        }
+        const sectionUsers = await User.find({
+          role: "student",
+          status: "active",
+          section: { $in: authUser.effectiveSectionIds.map((id: string) => new mongoose.Types.ObjectId(id)) },
+        }).select("_id").lean();
+        targetUserIds = sectionUsers.map((u) => u._id.toString());
       } else {
         targetUserIds = await resolveUserIdsForAudience({ targetType: "all" });
       }
@@ -70,9 +78,12 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "semester is required" }, { status: 400 });
       }
       
-      // M-03: If not super admin, they can't broadcast to an entire semester across all sections.
-      if (!isSuperAdmin) {
-        return NextResponse.json({ error: "Only super-admins can broadcast to an entire semester." }, { status: 403 });
+      // Only super admin can broadcast to an entire semester across all sections
+      if (!authUser.isSuperAdmin) {
+        return NextResponse.json(
+          { error: "Only super-admins can broadcast to an entire semester." },
+          { status: 403 }
+        );
       }
 
       targetUserIds = await resolveUserIdsForAudience({
@@ -84,9 +95,12 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "sectionId is required" }, { status: 400 });
       }
 
-      // M-03: Sub-admins can only broadcast to their own section
-      if (!isSuperAdmin && adminSection && sectionId !== adminSection) {
-        return NextResponse.json({ error: "You can only broadcast to your own section." }, { status: 403 });
+      // Sub-admins can only broadcast to sections they are assigned to
+      if (!canAdminManageSection(authUser, sectionId)) {
+        return NextResponse.json(
+          { error: "You can only broadcast to your assigned section(s)." },
+          { status: 403 }
+        );
       }
 
       targetUserIds = await resolveUserIdsForAudience({
@@ -94,11 +108,21 @@ export async function POST(request: Request) {
         sectionId,
       });
     } else {
-      const normalized = Array.isArray(userIds)
+      let normalized = Array.isArray(userIds)
         ? userIds
         : userId
           ? [userId]
           : [];
+
+      // Sub-admins can only send direct messages to students in their assigned sections
+      if (!authUser.isSuperAdmin) {
+        const allowedUsers = await User.find({
+          _id: { $in: normalized },
+          section: { $in: authUser.effectiveSectionIds.map((id: string) => new mongoose.Types.ObjectId(id)) },
+        }).select("_id").lean();
+        normalized = allowedUsers.map((u) => u._id.toString());
+      }
+
       targetUserIds = await resolveUserIdsForAudience({
         targetType: "users",
         userIds: normalized,
